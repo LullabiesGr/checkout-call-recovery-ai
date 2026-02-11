@@ -7,7 +7,6 @@ embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-04"
@@ -33,8 +32,8 @@ api_version = "2026-04"
   uri = "/webhooks/orders/create"
 
 [access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products"
+scopes = "read_orders,write_products"
+
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
