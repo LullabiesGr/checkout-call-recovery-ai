@@ -32,7 +32,8 @@ api_version = "2026-04"
   uri = "/webhooks/orders/create"
 
 [access_scopes]
-scopes = "read_orders,write_products"
+scopes = "read_orders,write_products,read_checkouts"
+
 
 
 [auth]

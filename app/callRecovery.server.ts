@@ -1,10 +1,10 @@
+// app/callRecovery.server.ts
 import db from "./db.server";
 
 type AdminClient = {
   graphql: (query: string, options?: any) => Promise<any>;
 };
 
-/** Parse "HH:MM" into minutes since midnight. */
 function parseHHMM(hhmm: string): number | null {
   const m = /^(\d{2}):(\d{2})$/.exec((hhmm || "").trim());
   if (!m) return null;
@@ -15,24 +15,16 @@ function parseHHMM(hhmm: string): number | null {
   return hh * 60 + mm;
 }
 
-function nextTimeWithinWindow(
-  now: Date,
-  startHHMM: string,
-  endHHMM: string,
-  leadMinutes: number
-) {
+function nextTimeWithinWindow(now: Date, startHHMM: string, endHHMM: string, leadMinutes: number) {
   const start = parseHHMM(startHHMM) ?? 9 * 60;
   const end = parseHHMM(endHHMM) ?? 19 * 60;
 
   const scheduled = new Date(now.getTime() + leadMinutes * 60 * 1000);
 
-  // Window crossing midnight not supported in v1; clamp.
   const windowStart = Math.min(start, end);
   const windowEnd = Math.max(start, end);
 
-  const minsScheduled =
-    scheduled.getHours() * 60 + scheduled.getMinutes();
-
+  const minsScheduled = scheduled.getHours() * 60 + scheduled.getMinutes();
   if (minsScheduled >= windowStart && minsScheduled <= windowEnd) return scheduled;
 
   const minsNow = now.getHours() * 60 + now.getMinutes();
@@ -47,10 +39,6 @@ function nextTimeWithinWindow(
   return next;
 }
 
-/**
- * Best-effort sync from Shopify Admin API (GraphQL).
- * If the shop lacks abandoned checkout access, it fails silently (returns 0).
- */
 export async function syncAbandonedCheckoutsFromShopify(params: {
   admin: AdminClient;
   shop: string;
@@ -73,6 +61,18 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
             totalPriceSet {
               shopMoney { amount currencyCode }
             }
+            shippingAddress { firstName lastName }
+            customer { firstName lastName }
+            lineItems(first: 10) {
+              edges {
+                node {
+                  title
+                  quantity
+                  variantTitle
+                  originalUnitPriceSet { shopMoney { amount currencyCode } }
+                }
+              }
+            }
           }
         }
       }
@@ -81,7 +81,7 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
 
   try {
     const res = await admin.graphql(query, { variables: { first: limit } });
-    const json = typeof res?.json === "function" ? await res.json() : res;
+    const json = typeof (res as any)?.json === "function" ? await (res as any).json() : res;
     const edges = json?.data?.abandonedCheckouts?.edges ?? [];
     if (!Array.isArray(edges)) return { synced: 0 };
 
@@ -91,6 +91,24 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
       const n = e?.node;
       const checkoutId = String(n?.id ?? "").trim();
       if (!checkoutId) continue;
+
+      const firstName = String(n?.shippingAddress?.firstName ?? n?.customer?.firstName ?? "").trim();
+      const lastName = String(n?.shippingAddress?.lastName ?? n?.customer?.lastName ?? "").trim();
+      const customerName = `${firstName} ${lastName}`.trim() || null;
+
+      const items = (n?.lineItems?.edges ?? [])
+        .map((x: any) => x?.node)
+        .filter(Boolean)
+        .map((it: any) => ({
+          title: it?.title ?? null,
+          quantity: Number(it?.quantity ?? 1),
+          variantTitle: it?.variantTitle ?? null,
+          price: it?.originalUnitPriceSet?.shopMoney?.amount ?? null,
+          currency: it?.originalUnitPriceSet?.shopMoney?.currencyCode ?? null,
+        }))
+        .filter((x: any) => x.title);
+
+      const itemsJson = items.length ? JSON.stringify(items) : null;
 
       const amount = Number(n?.totalPriceSet?.shopMoney?.amount ?? 0);
       const currency = String(n?.totalPriceSet?.shopMoney?.currencyCode ?? "USD");
@@ -107,10 +125,10 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
           value: Number.isFinite(amount) ? amount : 0,
           currency,
           status: completedAt ? "CONVERTED" : "ABANDONED",
-          abandonedAt: completedAt
-            ? null
-            : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
+          abandonedAt: completedAt ? null : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
           raw: JSON.stringify(n ?? null),
+          customerName,
+          itemsJson,
         },
         update: {
           email: n?.email ?? null,
@@ -118,10 +136,10 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
           value: Number.isFinite(amount) ? amount : 0,
           currency,
           status: completedAt ? "CONVERTED" : "ABANDONED",
-          abandonedAt: completedAt
-            ? null
-            : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
+          abandonedAt: completedAt ? null : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
           raw: JSON.stringify(n ?? null),
+          customerName,
+          itemsJson,
         },
       });
 
@@ -148,6 +166,9 @@ export async function ensureSettings(shop: string) {
         currency: "USD",
         callWindowStart: "09:00",
         callWindowEnd: "19:00",
+        vapiAssistantId: null,
+        vapiPhoneNumberId: null,
+        userPrompt: null,
       } as any,
     }))
   );
@@ -160,7 +181,7 @@ export async function markAbandonedByDelay(shop: string, delayMinutes: number) {
     where: {
       shop,
       status: "OPEN",
-      updatedAt: { lte: cutoff },
+      createdAt: { lte: cutoff }, // important: createdAt, not updatedAt
     },
     data: {
       status: "ABANDONED",
@@ -204,15 +225,9 @@ export async function enqueueCallJobs(params: {
       },
       select: { id: true },
     });
-
     if (exists) continue;
 
-    const scheduledFor = nextTimeWithinWindow(
-      new Date(),
-      callWindowStart,
-      callWindowEnd,
-      2
-    );
+    const scheduledFor = nextTimeWithinWindow(new Date(), callWindowStart, callWindowEnd, 2);
 
     await db.callJob.create({
       data: {

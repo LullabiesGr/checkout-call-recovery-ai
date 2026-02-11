@@ -7,7 +7,6 @@ import { Form, useLoaderData, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
-import { ensureSettings } from "../callRecovery.server";
 
 type LoaderData = {
   shop: string;
@@ -18,8 +17,6 @@ type LoaderData = {
     retryMinutes: number;
     minOrderValue: number;
     currency: string;
-    callWindowStart: string;
-    callWindowEnd: string;
   };
 };
 
@@ -33,9 +30,21 @@ function toFloat(v: FormDataEntryValue | null, fallback: number) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function toHHMM(v: FormDataEntryValue | null, fallback: string) {
-  const s = String(v ?? "").trim();
-  return /^\d{2}:\d{2}$/.test(s) ? s : fallback;
+async function ensureSettings(shop: string) {
+  const existing = await db.settings.findUnique({ where: { shop } });
+  if (existing) return existing;
+
+  return db.settings.create({
+    data: {
+      shop,
+      enabled: true,
+      delayMinutes: 30,
+      maxAttempts: 2,
+      retryMinutes: 180,
+      minOrderValue: 0,
+      currency: "USD",
+    },
+  });
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -53,8 +62,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       retryMinutes: settings.retryMinutes,
       minOrderValue: settings.minOrderValue,
       currency: settings.currency,
-      callWindowStart: (settings as any).callWindowStart ?? "09:00",
-      callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
     },
   } satisfies LoaderData;
 };
@@ -74,17 +81,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   );
   const retryMinutes = toInt(fd.get("retryMinutes"), current.retryMinutes);
   const minOrderValue = toFloat(fd.get("minOrderValue"), current.minOrderValue);
-  const currency =
-    String(fd.get("currency") ?? current.currency).trim() || current.currency;
 
-  const callWindowStart = toHHMM(
-    fd.get("callWindowStart"),
-    (current as any).callWindowStart ?? "09:00"
-  );
-  const callWindowEnd = toHHMM(
-    fd.get("callWindowEnd"),
-    (current as any).callWindowEnd ?? "19:00"
-  );
+  const currencyRaw = String(fd.get("currency") ?? current.currency).trim();
+  const currency = currencyRaw || current.currency;
 
   await db.settings.update({
     where: { shop },
@@ -95,9 +94,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       retryMinutes,
       minOrderValue,
       currency,
-      callWindowStart: callWindowStart as any,
-      callWindowEnd: callWindowEnd as any,
-    } as any,
+    },
   });
 
   return { ok: true };
@@ -127,63 +124,45 @@ export default function Settings() {
                 </label>
 
                 <s-text-field
-                  label="Min order value"
-                  name="minOrderValue"
-                  type="number"
-                  value={String(settings.minOrderValue)}
-                  help-text="Only enqueue calls for checkouts >= this amount."
-                />
-
-                <s-text-field
                   label="Delay before first call (minutes)"
                   name="delayMinutes"
                   type="number"
-                  value={String(settings.delayMinutes)}
-                  help-text="How long after abandonment to treat a checkout as ABANDONED."
+                  defaultValue={String(settings.delayMinutes)}
+                  help-text="How long after abandonment to consider it ABANDONED."
                 />
 
                 <s-text-field
                   label="Max call attempts"
                   name="maxAttempts"
                   type="number"
-                  value={String(settings.maxAttempts)}
-                  help-text="v1 placeholder for dialer retry policy."
+                  defaultValue={String(settings.maxAttempts)}
                 />
 
                 <s-text-field
                   label="Retry delay (minutes)"
                   name="retryMinutes"
                   type="number"
-                  value={String(settings.retryMinutes)}
-                  help-text="v1 placeholder for failed call retries."
+                  defaultValue={String(settings.retryMinutes)}
+                />
+
+                <s-text-field
+                  label="Min order value"
+                  name="minOrderValue"
+                  type="number"
+                  defaultValue={String(settings.minOrderValue)}
                 />
 
                 <s-text-field
                   label="Currency"
                   name="currency"
-                  value={settings.currency}
-                  help-text="Used for formatting only."
-                />
-
-                <s-text-field
-                  label="Call window (start)"
-                  name="callWindowStart"
-                  value={settings.callWindowStart}
-                  help-text="Server-local time in v1. Format HH:MM."
-                />
-
-                <s-text-field
-                  label="Call window (end)"
-                  name="callWindowEnd"
-                  value={settings.callWindowEnd}
-                  help-text="Server-local time in v1. Format HH:MM."
+                  defaultValue={settings.currency}
                 />
               </s-inline-grid>
 
               <s-divider />
 
               <s-stack direction="inline" gap="base">
-                <s-button submit>Save</s-button>
+                <s-button type="submit">Save</s-button>
               </s-stack>
             </s-stack>
           </Form>

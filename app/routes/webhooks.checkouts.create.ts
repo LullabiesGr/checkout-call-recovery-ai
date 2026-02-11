@@ -7,6 +7,60 @@ function toFloat(v: any) {
   return Number.isFinite(n) ? n : null;
 }
 
+function buildCustomerName(c: any): string | null {
+  const ship = c?.shipping_address ?? c?.shippingAddress ?? null;
+  const bill = c?.billing_address ?? c?.billingAddress ?? null;
+  const cust = c?.customer ?? null;
+
+  const first =
+    ship?.first_name ??
+    ship?.firstName ??
+    bill?.first_name ??
+    bill?.firstName ??
+    cust?.first_name ??
+    cust?.firstName ??
+    null;
+
+  const last =
+    ship?.last_name ??
+    ship?.lastName ??
+    bill?.last_name ??
+    bill?.lastName ??
+    cust?.last_name ??
+    cust?.lastName ??
+    null;
+
+  const full = `${String(first ?? "").trim()} ${String(last ?? "").trim()}`.trim();
+  return full ? full : null;
+}
+
+function buildItemsJson(c: any): string | null {
+  const arr =
+    c?.line_items ??
+    c?.lineItems ??
+    c?.items ??
+    [];
+
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+
+  const items = arr
+    .map((it: any) => ({
+      title: it?.title ?? it?.name ?? null,
+      quantity: Number(it?.quantity ?? 1),
+      sku: it?.sku ?? null,
+      variantTitle: it?.variant_title ?? it?.variantTitle ?? null,
+      variantId: it?.variant_id ?? it?.variantId ?? null,
+      price: it?.price ?? it?.price_set?.shop_money?.amount ?? null,
+      currency:
+        it?.price_set?.shop_money?.currency_code ??
+        it?.price_set?.shop_money?.currencyCode ??
+        null,
+    }))
+    .filter((x: any) => x.title);
+
+  return items.length ? JSON.stringify(items) : null;
+}
+
 export async function action({ request }: ActionFunctionArgs) {
   const { topic, shop, payload } = await authenticate.webhook(request);
 
@@ -24,6 +78,9 @@ export async function action({ request }: ActionFunctionArgs) {
   const email = c?.email ? String(c.email) : null;
   const phone = c?.phone ? String(c.phone) : null;
 
+  const customerName = buildCustomerName(c);
+  const itemsJson = buildItemsJson(c);
+
   await db.checkout.upsert({
     where: { shop_checkoutId: { shop, checkoutId } },
     create: {
@@ -35,6 +92,9 @@ export async function action({ request }: ActionFunctionArgs) {
       value,
       currency,
       status: "OPEN",
+      abandonedAt: null,
+      customerName,
+      itemsJson,
       raw: JSON.stringify(c),
     },
     update: {
@@ -44,6 +104,9 @@ export async function action({ request }: ActionFunctionArgs) {
       value,
       currency,
       status: "OPEN",
+      abandonedAt: null,
+      customerName,
+      itemsJson,
       raw: JSON.stringify(c),
     },
   });
