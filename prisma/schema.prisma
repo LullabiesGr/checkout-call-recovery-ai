@@ -86,9 +86,14 @@ model Settings {
   retryMinutes  Int      @default(180)
   minOrderValue Float    @default(0)
   currency      String   @default("USD")
+
+  callWindowStart String @default("09:00")
+  callWindowEnd   String @default("19:00")
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
+
 
 model Session {
   id            String   @id
