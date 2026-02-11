@@ -18,8 +18,6 @@ type LoaderData = {
     callWindowStart: string;
     callWindowEnd: string;
 
-    vapiAssistantId: string | null;
-    vapiPhoneNumberId: string | null;
     userPrompt: string | null;
   };
   saved?: boolean;
@@ -33,11 +31,6 @@ function toInt(v: FormDataEntryValue | null, fallback: number) {
 function toFloat(v: FormDataEntryValue | null, fallback: number) {
   const n = Number.parseFloat(String(v ?? ""));
   return Number.isFinite(n) ? n : fallback;
-}
-
-function toStr(v: FormDataEntryValue | null) {
-  const s = String(v ?? "").trim();
-  return s.length ? s : null;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -57,8 +50,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       currency: settings.currency,
       callWindowStart: (settings as any).callWindowStart ?? "09:00",
       callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
-      vapiAssistantId: (settings as any).vapiAssistantId ?? null,
-      vapiPhoneNumberId: (settings as any).vapiPhoneNumberId ?? null,
       userPrompt: (settings as any).userPrompt ?? "",
     },
   } satisfies LoaderData;
@@ -69,7 +60,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shop = session.shop;
 
   const settings = await ensureSettings(shop);
-
   const fd = await request.formData();
 
   const enabled = String(fd.get("enabled") ?? "") === "on";
@@ -79,12 +69,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const retryMinutes = toInt(fd.get("retryMinutes"), settings.retryMinutes);
   const minOrderValue = toFloat(fd.get("minOrderValue"), settings.minOrderValue);
 
-  const currency = String(fd.get("currency") ?? settings.currency ?? "USD").toUpperCase().trim() || "USD";
-  const callWindowStart = String(fd.get("callWindowStart") ?? (settings as any).callWindowStart ?? "09:00").trim() || "09:00";
-  const callWindowEnd = String(fd.get("callWindowEnd") ?? (settings as any).callWindowEnd ?? "19:00").trim() || "19:00";
+  const currency =
+    String(fd.get("currency") ?? settings.currency ?? "USD").toUpperCase().trim() || "USD";
+  const callWindowStart =
+    String(fd.get("callWindowStart") ?? (settings as any).callWindowStart ?? "09:00").trim() ||
+    "09:00";
+  const callWindowEnd =
+    String(fd.get("callWindowEnd") ?? (settings as any).callWindowEnd ?? "19:00").trim() || "19:00";
 
-  const vapiAssistantId = toStr(fd.get("vapiAssistantId"));
-  const vapiPhoneNumberId = toStr(fd.get("vapiPhoneNumberId"));
   const userPrompt = String(fd.get("userPrompt") ?? "").trim();
 
   await db.settings.update({
@@ -98,8 +90,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       currency,
       callWindowStart,
       callWindowEnd,
-      vapiAssistantId,
-      vapiPhoneNumberId,
       userPrompt,
     } as any,
   });
@@ -115,8 +105,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       currency,
       callWindowStart,
       callWindowEnd,
-      vapiAssistantId,
-      vapiPhoneNumberId,
       userPrompt,
     },
     saved: true,
@@ -150,71 +138,126 @@ export default function SettingsRoute() {
 
                 <label>
                   <div style={{ marginBottom: 6 }}>Delay before first call (minutes)</div>
-                  <input name="delayMinutes" defaultValue={settings.delayMinutes} style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)" }} />
+                  <input
+                    name="delayMinutes"
+                    defaultValue={settings.delayMinutes}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.15)",
+                    }}
+                  />
                 </label>
 
                 <label>
                   <div style={{ marginBottom: 6 }}>Max call attempts</div>
-                  <input name="maxAttempts" defaultValue={settings.maxAttempts} style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)" }} />
+                  <input
+                    name="maxAttempts"
+                    defaultValue={settings.maxAttempts}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.15)",
+                    }}
+                  />
                 </label>
 
                 <label>
                   <div style={{ marginBottom: 6 }}>Retry delay (minutes)</div>
-                  <input name="retryMinutes" defaultValue={settings.retryMinutes} style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)" }} />
+                  <input
+                    name="retryMinutes"
+                    defaultValue={settings.retryMinutes}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.15)",
+                    }}
+                  />
                 </label>
 
                 <label>
                   <div style={{ marginBottom: 6 }}>Min order value</div>
-                  <input name="minOrderValue" defaultValue={settings.minOrderValue} style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)" }} />
+                  <input
+                    name="minOrderValue"
+                    defaultValue={settings.minOrderValue}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.15)",
+                    }}
+                  />
                 </label>
 
                 <label>
                   <div style={{ marginBottom: 6 }}>Currency</div>
-                  <input name="currency" defaultValue={settings.currency} style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)" }} />
+                  <input
+                    name="currency"
+                    defaultValue={settings.currency}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.15)",
+                    }}
+                  />
                 </label>
 
                 <label>
                   <div style={{ marginBottom: 6 }}>Call window (start)</div>
-                  <input name="callWindowStart" defaultValue={settings.callWindowStart} placeholder="09:00" style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)" }} />
+                  <input
+                    name="callWindowStart"
+                    defaultValue={settings.callWindowStart}
+                    placeholder="09:00"
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.15)",
+                    }}
+                  />
                 </label>
 
                 <label>
                   <div style={{ marginBottom: 6 }}>Call window (end)</div>
-                  <input name="callWindowEnd" defaultValue={settings.callWindowEnd} placeholder="19:00" style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)" }} />
+                  <input
+                    name="callWindowEnd"
+                    defaultValue={settings.callWindowEnd}
+                    placeholder="19:00"
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.15)",
+                    }}
+                  />
                 </label>
 
                 <s-divider />
 
-                <s-text as="h3" variant="headingSm">Vapi</s-text>
+                <s-text as="h3" variant="headingSm">
+                  Agent prompt
+                </s-text>
 
                 <label>
-                  <div style={{ marginBottom: 6 }}>Vapi Assistant ID</div>
-                  <input
-                    name="vapiAssistantId"
-                    defaultValue={settings.vapiAssistantId ?? ""}
-                    placeholder="asst_..."
-                    style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)" }}
-                  />
-                </label>
-
-                <label>
-                  <div style={{ marginBottom: 6 }}>Vapi Phone Number ID</div>
-                  <input
-                    name="vapiPhoneNumberId"
-                    defaultValue={settings.vapiPhoneNumberId ?? ""}
-                    placeholder="pn_..."
-                    style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)" }}
-                  />
-                </label>
-
-                <label>
-                  <div style={{ marginBottom: 6 }}>Merchant prompt (appends to default preprompt)</div>
+                  <div style={{ marginBottom: 6 }}>
+                    Merchant prompt (appends to default preprompt)
+                  </div>
                   <textarea
                     name="userPrompt"
                     defaultValue={settings.userPrompt ?? ""}
                     rows={6}
                     placeholder="Your business style, offer rules, language, objections handling..."
-                    style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", resize: "vertical" }}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.15)",
+                      resize: "vertical",
+                    }}
                   />
                 </label>
 
