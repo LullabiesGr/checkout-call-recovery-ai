@@ -113,6 +113,8 @@ model Session {
   scope         String?
   expires       DateTime?
   accessToken   String
+
+  // αυτά τα πεδία τα θέλουν πολλές εκδόσεις του storage adapter
   userId        BigInt?
   firstName     String?
   lastName      String?
@@ -121,5 +123,11 @@ model Session {
   locale        String?
   collaborator  Boolean? @default(false)
   emailVerified Boolean? @default(false)
+
+  // ΒΑΛ’ ΤΑ ΠΙΣΩ για να μην σκάει σε διαφορετικές εκδόσεις
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+
+  @@index([shop])
 }
 

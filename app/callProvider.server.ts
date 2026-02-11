@@ -196,3 +196,23 @@ export async function startVapiCallForJob(params: {
 export const createVapiCallForJob = startVapiCallForJob;
 export const placeCall = startVapiCallForJob;
 
+export async function createVapiCallForJob(params: { shop: string; callJobId: string }) {
+  return startVapiCallForJob(params);
+}
+
+export async function placeCall(params: {
+  shop: string;
+  phone: string;
+  checkoutId: string;
+  customerName?: string | null;
+  items?: Array<{ title: string; quantity?: number }> | null;
+  amount?: number | null;
+  currency?: string | null;
+}) {
+  // εδώ είτε:
+  // 1) δημιουργείς CallJob και καλείς startVapiCallForJob, ή
+  // 2) αν ήδη έχεις job pipeline, απλά κάνε throw για να μη χρησιμοποιείται
+  throw new Error("placeCall not wired. Use CallJob pipeline + /api/run-calls.");
+}
+
+
