@@ -10,7 +10,6 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-
 enum CheckoutStatus {
   OPEN
   ABANDONED
@@ -96,14 +95,17 @@ model Settings {
   callWindowStart String @default("09:00")
   callWindowEnd   String @default("19:00")
 
-  // ✅ merchant-only
+  // Vapi config (optional)
+  vapiAssistantId   String?
+  vapiPhoneNumberId String?
+
+  // Prompts
+  userPrompt     String  @default("")
   merchantPrompt String? @default("")
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
-
-
 
 model Session {
   id            String   @id
@@ -130,4 +132,3 @@ model Session {
 
   @@index([shop])
 }
-
