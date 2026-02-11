@@ -191,3 +191,8 @@ export async function startVapiCallForJob(params: {
 
   return { ok: true, providerCallId, raw: json };
 }
+
+// Back-compat exports (older imports expect these names)
+export const createVapiCallForJob = startVapiCallForJob;
+export const placeCall = startVapiCallForJob;
+
