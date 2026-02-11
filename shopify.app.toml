@@ -2,7 +2,7 @@
 
 client_id = "63be868871ff844a26f66004cd9b4316"
 name = "Checkout Call Recovery AI"
-application_url = "https://example.com"
+application_url = "https://checkout-call-recovery-ai.onrender.com"
 embedded = true
 
 [build]
@@ -37,4 +37,4 @@ scopes = "read_orders,write_products,read_checkouts"
 
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://checkout-call-recovery-ai.onrender.com/api/auth" ]
