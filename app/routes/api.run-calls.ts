@@ -2,16 +2,7 @@
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
 import { ensureSettings } from "../callRecovery.server";
-import { placeCall } from "../callProvider.server";
-
-function safeJsonParse<T>(s?: string | null): T | null {
-  if (!s) return null;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return null;
-  }
-}
+import { startVapiCallForJob } from "../callProvider.server";
 
 // POST /api/run-calls
 export async function action({ request }: ActionFunctionArgs) {
@@ -39,7 +30,7 @@ export async function action({ request }: ActionFunctionArgs) {
   let failed = 0;
 
   for (const job of jobs) {
-    // lock
+    // lock (prevent double-processing)
     const locked = await db.callJob.updateMany({
       where: { id: job.id, status: "QUEUED" },
       data: {
@@ -53,39 +44,19 @@ export async function action({ request }: ActionFunctionArgs) {
 
     const settings = await ensureSettings(job.shop);
 
-    // fetch checkout details for script
-    const checkout = await db.checkout.findUnique({
-      where: { shop_checkoutId: { shop: job.shop, checkoutId: job.checkoutId } },
-      select: {
-        customerName: true,
-        itemsJson: true,
-        value: true,
-        currency: true,
-      },
-    });
-
-    const items = safeJsonParse<Array<{ title: string; quantity?: number }>>(
-      checkout?.itemsJson ?? null
-    );
-
     try {
-      const res = await placeCall({
+      const res = await startVapiCallForJob({
         shop: job.shop,
-        phone: job.phone,
-        checkoutId: job.checkoutId,
-        customerName: checkout?.customerName ?? null,
-        items,
-        amount: checkout?.value ?? null,
-        currency: checkout?.currency ?? null,
+        callJobId: job.id,
       });
 
       await db.callJob.update({
         where: { id: job.id },
         data: {
           status: "COMPLETED",
-          provider: res.provider,
-          providerCallId: res.providerCallId,
-          outcome: res.outcome,
+          provider: "vapi",
+          providerCallId: res.providerCallId ?? null,
+          outcome: "VAPI_CALL_STARTED",
         },
       });
 
