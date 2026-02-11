@@ -37,4 +37,6 @@ scopes = "read_orders,write_products,read_checkouts"
 
 
 [auth]
-redirect_urls = [ "https://checkout-call-recovery-ai.onrender.com/api/auth" ]
+redirect_urls = [
+  "https://checkout-call-recovery-ai.onrender.com/auth/callback"
+]
