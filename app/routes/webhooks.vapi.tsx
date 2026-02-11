@@ -1,66 +1,51 @@
-// app/routes/webhooks.vapi.tsx
+// app/routes/webhooks.vapi.ts
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
 
 export async function action({ request }: ActionFunctionArgs) {
-  const body = await request.json().catch(() => null);
+  const url = new URL(request.url);
+  const secret = url.searchParams.get("secret") ?? "";
+  if (!process.env.VAPI_WEBHOOK_SECRET || secret !== process.env.VAPI_WEBHOOK_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
 
-  // Vapi sends { message: {...} } in many setups
-  const message = body?.message ?? body;
-  if (!message) return new Response("OK", { status: 200 });
+  const payload = await request.json().catch(() => null);
+  if (!payload) return new Response("Bad Request", { status: 400 });
 
-  // Best effort: read metadata we set on create
-  const call = message?.call;
-  const meta = call?.metadata ?? {};
-  const shop = String(meta.shop ?? "");
-  const callJobId = String(meta.callJobId ?? "");
-  const providerCallId = String(call?.id ?? "");
-
+  const metadata = payload?.metadata ?? payload?.assistant?.metadata ?? {};
+  const shop = String(metadata?.shop ?? "");
+  const callJobId = String(metadata?.callJobId ?? "");
   if (!shop || !callJobId) return new Response("OK", { status: 200 });
 
-  // status updates
-  if (message.type === "status-update") {
-    const status = String(call?.status ?? "").toUpperCase();
+  const eventType = String(payload?.type ?? payload?.messageType ?? payload?.event ?? "");
 
-    // Map Vapi statuses to our statuses (best effort)
-    let next: "CALLING" | "COMPLETED" | "FAILED" | "CANCELED" | null = null;
+  // Best-effort outcome text
+  const summary =
+    payload?.analysis?.summary ??
+    payload?.summary ??
+    payload?.endedReason ??
+    payload?.status ??
+    eventType ??
+    "VAPI_EVENT";
 
-    if (status.includes("IN_PROGRESS") || status.includes("RINGING") || status.includes("QUEUED")) next = "CALLING";
-    if (status.includes("ENDED") || status.includes("COMPLETED")) next = "COMPLETED";
-    if (status.includes("FAILED")) next = "FAILED";
-    if (status.includes("CANCELED")) next = "CANCELED";
+  // Map statuses
+  // Keep simple: when end-of-call-report arrives => COMPLETED unless explicitly failed
+  let newStatus: "CALLING" | "COMPLETED" | "FAILED" | null = null;
 
-    await db.callJob.update({
-      where: { id: callJobId },
-      data: {
-        provider: "vapi",
-        providerCallId,
-        status: next ?? undefined,
-        outcome: `VAPI_STATUS:${status}`,
-      },
-    });
-
-    return new Response("OK", { status: 200 });
+  const lowered = JSON.stringify(payload).toLowerCase();
+  if (lowered.includes("end-of-call-report") || lowered.includes("ended")) {
+    newStatus = lowered.includes("error") ? "FAILED" : "COMPLETED";
+  } else if (lowered.includes("in-progress") || lowered.includes("connected")) {
+    newStatus = "CALLING";
   }
 
-  // transcript messages: append last line as outcome (optional lightweight)
-  if (message.type === "transcript") {
-    const role = String(message.role ?? "");
-    const transcript = String(message.transcript ?? "").slice(0, 800);
-
-    if (transcript) {
-      await db.callJob.update({
-        where: { id: callJobId },
-        data: {
-          provider: "vapi",
-          providerCallId,
-          outcome: `TRANSCRIPT_${role}:${transcript}`,
-        },
-      });
-    }
-
-    return new Response("OK", { status: 200 });
-  }
+  await db.callJob.updateMany({
+    where: { id: callJobId, shop },
+    data: {
+      status: newStatus ?? undefined,
+      outcome: String(summary).slice(0, 2000),
+    },
+  });
 
   return new Response("OK", { status: 200 });
 }

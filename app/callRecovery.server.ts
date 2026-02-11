@@ -168,11 +168,12 @@ export async function ensureSettings(shop: string) {
         callWindowEnd: "19:00",
         vapiAssistantId: null,
         vapiPhoneNumberId: null,
-        userPrompt: null,
+        userPrompt: "",
       } as any,
     }))
   );
 }
+
 
 export async function markAbandonedByDelay(shop: string, delayMinutes: number) {
   const cutoff = new Date(Date.now() - delayMinutes * 60 * 1000);

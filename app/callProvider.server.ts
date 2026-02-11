@@ -1,152 +1,193 @@
 // app/callProvider.server.ts
-import { VapiClient } from "@vapi-ai/server-sdk";
 import db from "./db.server";
 
-function requireEnv(name: string) {
+function requiredEnv(name: string) {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing env ${name}`);
+  if (!v) throw new Error(`Missing env: ${name}`);
   return v;
 }
 
-function buildCartPreview(itemsJson?: string | null): string {
-  if (!itemsJson) return "";
-  try {
-    const items = JSON.parse(itemsJson);
-    if (!Array.isArray(items)) return "";
-    return items
-      .slice(0, 6)
-      .map((it: any) => `${String(it?.title ?? "").trim()} x${Number(it?.quantity ?? 1)}`)
-      .filter(Boolean)
-      .join(", ");
-  } catch {
-    return "";
-  }
-}
-
-function buildDynamicPrompt(params: {
-  basePreprompt: string;
-  userPrompt?: string | null;
-  shop: string;
-  customerName?: string | null;
-  cartPreview?: string;
-  currency: string;
-  value: number;
+function buildSystemPrompt(args: {
+  merchantPrompt?: string | null;
+  checkout: {
+    checkoutId: string;
+    customerName?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    value: number;
+    currency: string;
+    itemsJson?: string | null;
+  };
 }) {
-  const {
-    basePreprompt,
-    userPrompt,
-    shop,
-    customerName,
-    cartPreview,
-    currency,
-    value,
-  } = params;
+  const { merchantPrompt, checkout } = args;
 
-  const parts: string[] = [];
-  parts.push(basePreprompt.trim());
+  const items = (() => {
+    try {
+      const arr = checkout.itemsJson ? JSON.parse(checkout.itemsJson) : [];
+      if (!Array.isArray(arr)) return [];
+      return arr.slice(0, 10);
+    } catch {
+      return [];
+    }
+  })();
 
-  parts.push(
-    [
-      `Context:`,
-      `Store: ${shop}`,
-      `Customer name: ${customerName || "unknown"}`,
-      `Cart: ${cartPreview || "unknown"}`,
-      `Cart value: ${value.toFixed(2)} ${currency}`,
-      ``,
-      `Rules:`,
-      `- Be concise. One question at a time.`,
-      `- If customer says they already ordered, end politely.`,
-      `- Never mention internal tools or databases.`,
-    ].join("\n")
-  );
+  const cartText =
+    items.length === 0
+      ? "No cart items available."
+      : items
+          .map((it: any) => `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`)
+          .join("\n");
 
-  if (userPrompt && userPrompt.trim()) {
-    parts.push(`Merchant instructions:\n${userPrompt.trim()}`);
-  }
+  const base = `
+You are the merchant's AI phone agent. Your job: recover an abandoned checkout politely and efficiently.
 
-  return parts.join("\n\n").trim();
+Rules:
+- Never be pushy. Confirm identity. Ask if it's a good time.
+- Use the cart context and total value.
+- If the customer objects, handle objections and offer help.
+- If they want to buy: guide them to complete checkout (send link if available, or instruct steps).
+- If they do not want to continue: end politely and mark as not interested.
+- Keep calls short.
+
+Context:
+- Checkout ID: ${checkout.checkoutId}
+- Customer name: ${checkout.customerName ?? "-"}
+- Email: ${checkout.email ?? "-"}
+- Cart total: ${checkout.value} ${checkout.currency}
+- Cart items:
+${cartText}
+`.trim();
+
+  const merchant = (merchantPrompt ?? "").trim();
+  if (!merchant) return base;
+
+  return `${base}\n\nMerchant instructions (must follow):\n${merchant}`.trim();
 }
 
-export async function createVapiCallForJob(params: {
+export async function startVapiCallForJob(params: {
   shop: string;
   callJobId: string;
 }) {
-  const { shop, callJobId } = params;
-
-  const token = requireEnv("VAPI_API_KEY");
-  const vapi = new VapiClient({ token });
+  const VAPI_API_KEY = requiredEnv("VAPI_API_KEY");
+  const VAPI_ASSISTANT_ID = requiredEnv("VAPI_ASSISTANT_ID");
+  const VAPI_PHONE_NUMBER_ID = requiredEnv("VAPI_PHONE_NUMBER_ID");
+  const APP_URL = requiredEnv("APP_URL");
+  const VAPI_WEBHOOK_SECRET = requiredEnv("VAPI_WEBHOOK_SECRET");
 
   const job = await db.callJob.findFirst({
-    where: { id: callJobId, shop },
+    where: { id: params.callJobId, shop: params.shop },
   });
   if (!job) throw new Error("CallJob not found");
 
-  const settings = await db.settings.findUnique({ where: { shop } });
-  if (!settings?.vapiAssistantId || !settings?.vapiPhoneNumberId) {
-    throw new Error("Missing Vapi settings (assistantId/phoneNumberId)");
-  }
-
   const checkout = await db.checkout.findFirst({
-    where: { shop, checkoutId: job.checkoutId },
+    where: { shop: params.shop, checkoutId: job.checkoutId },
+  });
+  if (!checkout) throw new Error("Checkout not found");
+
+  const settings = await db.settings.findUnique({ where: { shop: params.shop } });
+
+  const systemPrompt = buildSystemPrompt({
+    merchantPrompt: settings?.merchantPrompt ?? "",
+    checkout: {
+      checkoutId: checkout.checkoutId,
+      customerName: checkout.customerName,
+      email: checkout.email,
+      phone: checkout.phone,
+      value: checkout.value,
+      currency: checkout.currency,
+      itemsJson: checkout.itemsJson,
+    },
   });
 
-  const basePreprompt =
-    `You are a helpful phone agent calling an e-commerce customer about an incomplete checkout. ` +
-    `Your goal is to help them complete the purchase or answer questions. Keep it natural, calm, and professional.`;
-
-  const cartPreview = buildCartPreview(checkout?.itemsJson ?? null);
-
-  const dynamicPrompt = buildDynamicPrompt({
-    basePreprompt,
-    userPrompt: settings.userPrompt,
-    shop,
-    customerName: checkout?.customerName ?? null,
-    cartPreview,
-    currency: checkout?.currency ?? settings.currency ?? "USD",
-    value: checkout?.value ?? 0,
-  });
-
-  // Lock -> CALLING + attempts increment (atomic)
-  const locked = await db.callJob.updateMany({
-    where: { id: job.id, shop, status: "QUEUED" },
+  // Lock job -> CALLING
+  await db.callJob.update({
+    where: { id: job.id },
     data: {
       status: "CALLING",
-      attempts: { increment: 1 },
       provider: "vapi",
+      attempts: { increment: 1 },
+      outcome: null,
     },
   });
-  if (locked.count === 0) {
-    return { ok: true, skipped: true };
+
+  const webhookUrl = `${APP_URL.replace(/\/$/, "")}/webhooks/vapi?secret=${encodeURIComponent(
+    VAPI_WEBHOOK_SECRET
+  )}`;
+
+  // Create phone call (Vapi API)
+  // Endpoint: POST https://api.vapi.ai/call/phone :contentReference[oaicite:1]{index=1}
+  const res = await fetch("https://api.vapi.ai/call/phone", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${VAPI_API_KEY}`,
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      phoneNumberId: VAPI_PHONE_NUMBER_ID,
+      assistantId: VAPI_ASSISTANT_ID,
+
+      customer: {
+        number: job.phone,
+        name: checkout.customerName ?? undefined,
+      },
+
+      // ✅ dynamic per-call override
+      assistant: {
+        // Use your single assistant but override model messages on this call
+        model: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content:
+                "Start the call now. Greet the customer and mention you noticed they almost completed checkout. Ask if they need help finishing the order.",
+            },
+          ],
+        },
+
+        // ✅ send call events back to your app
+        serverUrl: webhookUrl,
+        serverMessages: ["status-update", "end-of-call-report", "transcript"],
+        metadata: {
+          shop: params.shop,
+          callJobId: job.id,
+          checkoutId: job.checkoutId,
+        },
+      },
+
+      metadata: {
+        shop: params.shop,
+        callJobId: job.id,
+        checkoutId: job.checkoutId,
+      },
+    }),
+  });
+
+  const json = await res.json().catch(() => null);
+
+  if (!res.ok) {
+    await db.callJob.update({
+      where: { id: job.id },
+      data: {
+        status: "FAILED",
+        outcome: `VAPI_ERROR: ${JSON.stringify(json)}`,
+      },
+    });
+    throw new Error(`Vapi create call failed: ${JSON.stringify(json)}`);
   }
 
-  // Create call
-  const call = await vapi.calls.create({
-    phoneNumberId: settings.vapiPhoneNumberId,
-    assistantId: settings.vapiAssistantId,
-    customer: {
-      number: job.phone,
-      name: checkout?.customerName ?? undefined,
-    },
-    metadata: {
-      shop,
-      callJobId: job.id,
-      checkoutId: job.checkoutId,
-    },
-    // Override assistant behavior per-call (dynamic prompt)
-    assistantOverrides: {
-      model: {
-        messages: [{ role: "system", content: dynamicPrompt }],
-      },
-    },
-  } as any);
+  const providerCallId = String(json?.id ?? json?.call?.id ?? "");
 
   await db.callJob.update({
     where: { id: job.id },
     data: {
-      providerCallId: String((call as any)?.id ?? ""),
-      outcome: "CALL_CREATED",
+      providerCallId: providerCallId || null,
+      outcome: `VAPI_CALL_CREATED`,
     },
   });
 
-  return { ok: true, providerCallId: String((call as any)?.id ?? "") };
+  return { ok: true, providerCallId, raw: json };
 }

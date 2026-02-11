@@ -1,5 +1,9 @@
 // app/routes/app._index.tsx
-import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
+import type {
+  ActionFunctionArgs,
+  HeadersFunction,
+  LoaderFunctionArgs,
+} from "react-router";
 import { Form, useLoaderData, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -15,6 +19,7 @@ import { createVapiCallForJob } from "../callProvider.server";
 type LoaderData = {
   shop: string;
   currency: string;
+  vapiConfigured: boolean;
   stats: {
     abandonedCount7d: number;
     potentialRevenue7d: number;
@@ -41,12 +46,30 @@ function buildCartPreview(itemsJson?: string | null): string | null {
     if (!Array.isArray(items) || items.length === 0) return null;
     return items
       .slice(0, 3)
-      .map((it: any) => `${String(it?.title ?? "").trim()} x${Number(it?.quantity ?? 1)}`)
-      .filter((s: string) => s.trim() && !s.includes("undefined"))
+      .map((it: any) => {
+        const title = String(it?.title ?? "").trim();
+        const qty = Number(it?.quantity ?? 1);
+        if (!title) return null;
+        return `${title} x${Number.isFinite(qty) ? qty : 1}`;
+      })
+      .filter(Boolean)
       .join(", ");
   } catch {
     return null;
   }
+}
+
+function isVapiConfiguredFromEnv() {
+  const assistantId =
+    process.env.VAPI_ASSISTANT_ID || process.env.VAPI_ASSISTANT_ID?.trim();
+  const phoneNumberId =
+    process.env.VAPI_PHONE_NUMBER_ID || process.env.VAPI_PHONE_NUMBER_ID?.trim();
+  const apiKey =
+    process.env.VAPI_API_KEY || process.env.VAPI_API_KEY?.trim();
+
+  return Boolean(String(apiKey || "").trim()) &&
+    Boolean(String(assistantId || "").trim()) &&
+    Boolean(String(phoneNumberId || "").trim());
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -55,6 +78,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const settings = await ensureSettings(shop);
 
+  // Data pipeline
   await syncAbandonedCheckoutsFromShopify({ admin, shop, limit: 50 });
   await markAbandonedByDelay(shop, settings.delayMinutes);
 
@@ -68,33 +92,41 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const [abandonedCount7d, potentialAgg, queuedCalls, completedCalls7d, recentJobs] =
-    await Promise.all([
-      db.checkout.count({
-        where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
-      }),
-      db.checkout.aggregate({
-        where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
-        _sum: { value: true },
-      }),
-      db.callJob.count({ where: { shop, status: "QUEUED" } }),
-      db.callJob.count({ where: { shop, status: "COMPLETED", createdAt: { gte: since } } }),
-      db.callJob.findMany({
-        where: { shop },
-        orderBy: { createdAt: "desc" },
-        take: 15,
-        select: {
-          id: true,
-          checkoutId: true,
-          status: true,
-          scheduledFor: true,
-          attempts: true,
-          createdAt: true,
-          outcome: true,
-        },
-      }),
-    ]);
+  const [
+    abandonedCount7d,
+    potentialAgg,
+    queuedCalls,
+    completedCalls7d,
+    recentJobs,
+  ] = await Promise.all([
+    db.checkout.count({
+      where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
+    }),
+    db.checkout.aggregate({
+      where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
+      _sum: { value: true },
+    }),
+    db.callJob.count({ where: { shop, status: "QUEUED" } }),
+    db.callJob.count({
+      where: { shop, status: "COMPLETED", createdAt: { gte: since } },
+    }),
+    db.callJob.findMany({
+      where: { shop },
+      orderBy: { createdAt: "desc" },
+      take: 15,
+      select: {
+        id: true,
+        checkoutId: true,
+        status: true,
+        scheduledFor: true,
+        attempts: true,
+        createdAt: true,
+        outcome: true,
+      },
+    }),
+  ]);
 
+  // Join Checkout => customer/cart
   const ids = recentJobs.map((j) => j.checkoutId);
   const related =
     ids.length === 0
@@ -105,12 +137,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         });
 
   const cMap = new Map(related.map((c) => [c.checkoutId, c]));
-
   const potentialRevenue7d = Number(potentialAgg._sum.value ?? 0);
 
   return {
     shop,
     currency: settings.currency || "USD",
+    vapiConfigured: isVapiConfiguredFromEnv(),
     stats: {
       abandonedCount7d,
       potentialRevenue7d,
@@ -137,43 +169,57 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const fd = await request.formData();
   const intent = String(fd.get("intent") ?? "");
 
-  // Run queued (automation simulation -> now real Vapi create)
+  const redirectBack = () =>
+    new Response(null, { status: 303, headers: { Location: "/app" } });
+
+  // Run queued jobs: create real Vapi calls if env configured, else simulate
   if (intent === "run_jobs") {
     const settings = await ensureSettings(shop);
+    const vapiOk = isVapiConfiguredFromEnv();
 
+    const now = new Date();
     const jobs = await db.callJob.findMany({
-      where: { shop, status: "QUEUED" },
+      where: {
+        shop,
+        status: "QUEUED",
+        scheduledFor: { lte: now }, // honor schedule
+      },
       orderBy: { scheduledFor: "asc" },
       take: 10,
     });
 
-    let processed = 0;
-
     for (const job of jobs) {
-      // If Vapi not configured, keep old simulated behavior
-      const hasVapi = Boolean((settings as any).vapiAssistantId && (settings as any).vapiPhoneNumberId);
+      // lock
+      const locked = await db.callJob.updateMany({
+        where: { id: job.id, shop, status: "QUEUED" },
+        data: {
+          status: "CALLING",
+          attempts: { increment: 1 },
+          provider: vapiOk ? "vapi" : "sim",
+          outcome: null,
+        },
+      });
 
-      if (!hasVapi) {
-        const locked = await db.callJob.updateMany({
-          where: { id: job.id, shop, status: "QUEUED" },
-          data: { status: "CALLING", attempts: { increment: 1 }, provider: "sim" },
-        });
-        if (locked.count === 0) continue;
+      if (locked.count === 0) continue;
 
+      if (!vapiOk) {
         await db.callJob.update({
           where: { id: job.id },
-          data: { status: "COMPLETED", outcome: `SIMULATED_CALL_OK phone=${job.phone}` },
+          data: {
+            status: "COMPLETED",
+            outcome: `SIMULATED_CALL_OK phone=${job.phone}`,
+          },
         });
-
-        processed += 1;
         continue;
       }
 
-      // Real Vapi call create
       try {
-        const r = await createVapiCallForJob({ shop, callJobId: job.id });
-        if (r?.skipped) continue;
-        processed += 1;
+        // createVapiCallForJob should:
+        // - read merchant prompt from Settings (DB)
+        // - compose default preprompt + merchant prompt + checkout context
+        // - create call via Vapi using ENV assistant/phone ids
+        // - persist providerCallId + outcome/status updates
+        await createVapiCallForJob({ shop, callJobId: job.id });
       } catch (e: any) {
         const attemptsAfter = (job.attempts ?? 0) + 1;
         const maxAttempts = settings.maxAttempts ?? 2;
@@ -181,57 +227,62 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         if (attemptsAfter >= maxAttempts) {
           await db.callJob.update({
             where: { id: job.id },
-            data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
+            data: {
+              status: "FAILED",
+              outcome: `ERROR: ${String(e?.message ?? e)}`,
+            },
           });
         } else {
           const retryMinutes = settings.retryMinutes ?? 180;
           const next = new Date(Date.now() + retryMinutes * 60 * 1000);
+
           await db.callJob.update({
             where: { id: job.id },
-            data: { status: "QUEUED", scheduledFor: next, outcome: `RETRY_SCHEDULED in ${retryMinutes}m` },
+            data: {
+              status: "QUEUED",
+              scheduledFor: next,
+              outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
+            },
           });
         }
       }
     }
 
-    return new Response(JSON.stringify({ ok: true, processed }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
+    return redirectBack();
   }
 
-  // Manual call for a specific job
+  // Manual call for a specific job (creates Vapi call; requires env configured)
   if (intent === "manual_call") {
-    const callJobId = String(fd.get("callJobId") ?? "");
-    if (!callJobId) {
-      return new Response(JSON.stringify({ ok: false, error: "Missing callJobId" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
+    const callJobId = String(fd.get("callJobId") ?? "").trim();
+    if (!callJobId) return redirectBack();
+
+    const vapiOk = isVapiConfiguredFromEnv();
+    if (!vapiOk) {
+      await db.callJob.updateMany({
+        where: { id: callJobId, shop },
+        data: { outcome: "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)" },
       });
+      return redirectBack();
     }
 
     try {
-      const r = await createVapiCallForJob({ shop, callJobId });
-      return new Response(JSON.stringify({ ok: true, ...r }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      await createVapiCallForJob({ shop, callJobId });
     } catch (e: any) {
-      return new Response(JSON.stringify({ ok: false, error: String(e?.message ?? e) }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+      await db.callJob.updateMany({
+        where: { id: callJobId, shop },
+        data: { outcome: `ERROR: ${String(e?.message ?? e)}` },
       });
     }
+
+    return redirectBack();
   }
 
-  return new Response(JSON.stringify({ ok: true, ignored: true }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
+  return redirectBack();
 };
 
 export default function Dashboard() {
-  const { shop, stats, recentJobs, currency } = useLoaderData<typeof loader>();
+  const { shop, stats, recentJobs, currency, vapiConfigured } =
+    useLoaderData<typeof loader>();
 
   const money = (n: number) =>
     new Intl.NumberFormat(undefined, {
@@ -250,33 +301,57 @@ export default function Dashboard() {
         <s-inline-grid columns={{ xs: 1, sm: 2, md: 4 }} gap="base">
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">Abandoned checkouts</s-text>
-              <s-text as="p" variant="headingLg">{stats.abandonedCount7d}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Last 7 days (DB)</s-text>
+              <s-text as="h3" variant="headingSm">
+                Abandoned checkouts
+              </s-text>
+              <s-text as="p" variant="headingLg">
+                {stats.abandonedCount7d}
+              </s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">
+                Last 7 days (DB)
+              </s-text>
             </s-stack>
           </s-card>
 
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">Potential revenue</s-text>
-              <s-text as="p" variant="headingLg">{money(stats.potentialRevenue7d)}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Last 7 days (DB)</s-text>
+              <s-text as="h3" variant="headingSm">
+                Potential revenue
+              </s-text>
+              <s-text as="p" variant="headingLg">
+                {money(stats.potentialRevenue7d)}
+              </s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">
+                Last 7 days (DB)
+              </s-text>
             </s-stack>
           </s-card>
 
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">Calls queued</s-text>
-              <s-text as="p" variant="headingLg">{stats.queuedCalls}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Ready to dial</s-text>
+              <s-text as="h3" variant="headingSm">
+                Calls queued
+              </s-text>
+              <s-text as="p" variant="headingLg">
+                {stats.queuedCalls}
+              </s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">
+                Ready to dial
+              </s-text>
             </s-stack>
           </s-card>
 
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">Completed calls</s-text>
-              <s-text as="p" variant="headingLg">{stats.completedCalls7d}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Last 7 days (DB)</s-text>
+              <s-text as="h3" variant="headingSm">
+                Completed calls
+              </s-text>
+              <s-text as="p" variant="headingLg">
+                {stats.completedCalls7d}
+              </s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">
+                Last 7 days (DB)
+              </s-text>
             </s-stack>
           </s-card>
         </s-inline-grid>
@@ -291,10 +366,11 @@ export default function Dashboard() {
                 type="submit"
                 style={{
                   padding: "8px 12px",
-                  borderRadius: 8,
+                  borderRadius: 10,
                   border: "1px solid rgba(0,0,0,0.12)",
                   background: "white",
                   cursor: "pointer",
+                  fontWeight: 600,
                 }}
               >
                 Run queued jobs
@@ -302,14 +378,18 @@ export default function Dashboard() {
             </Form>
 
             <s-text as="p" tone="subdued">
-              If Vapi is configured, creates real calls. Otherwise simulates.
+              {vapiConfigured
+                ? "Creates real Vapi calls for due queued jobs."
+                : "Vapi not configured in ENV. Button will simulate calls."}
             </s-text>
           </s-stack>
 
           <s-divider />
 
           {recentJobs.length === 0 ? (
-            <s-text as="p" tone="subdued">No call jobs yet.</s-text>
+            <s-text as="p" tone="subdued">
+              No call jobs yet.
+            </s-text>
           ) : (
             <s-table>
               <s-table-head>
@@ -324,14 +404,19 @@ export default function Dashboard() {
                   <s-table-header-cell>Manual</s-table-header-cell>
                 </s-table-row>
               </s-table-head>
+
               <s-table-body>
                 {recentJobs.map((j) => (
                   <s-table-row key={j.id}>
                     <s-table-cell>{j.checkoutId}</s-table-cell>
                     <s-table-cell>{j.customerName ?? "-"}</s-table-cell>
                     <s-table-cell>{j.cartPreview ?? "-"}</s-table-cell>
-                    <s-table-cell><s-badge>{j.status}</s-badge></s-table-cell>
-                    <s-table-cell>{new Date(j.scheduledFor).toLocaleString()}</s-table-cell>
+                    <s-table-cell>
+                      <s-badge>{j.status}</s-badge>
+                    </s-table-cell>
+                    <s-table-cell>
+                      {new Date(j.scheduledFor).toLocaleString()}
+                    </s-table-cell>
                     <s-table-cell>{j.attempts}</s-table-cell>
                     <s-table-cell>{j.outcome ?? "-"}</s-table-cell>
                     <s-table-cell>
@@ -343,10 +428,11 @@ export default function Dashboard() {
                           disabled={j.status !== "QUEUED"}
                           style={{
                             padding: "6px 10px",
-                            borderRadius: 8,
+                            borderRadius: 10,
                             border: "1px solid rgba(0,0,0,0.12)",
                             background: j.status === "QUEUED" ? "white" : "#f3f3f3",
                             cursor: j.status === "QUEUED" ? "pointer" : "not-allowed",
+                            fontWeight: 600,
                           }}
                         >
                           Call now
