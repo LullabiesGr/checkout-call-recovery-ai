@@ -1,16 +1,28 @@
-import type { LoginError } from "@shopify/shopify-app-react-router/server";
-import { LoginErrorType } from "@shopify/shopify-app-react-router/server";
+import type { HeadersFunction } from "react-router";
+import { useRouteError } from "react-router";
+import { boundary } from "@shopify/shopify-app-react-router/server";
 
-interface LoginErrorMessage {
-  shop?: string;
+export default function AuthLoginErrorRoute() {
+  const err = useRouteError() as any;
+
+  const msg =
+    (err && (err.data || err.message)) ? String(err.data || err.message) : "Auth error";
+
+  return (
+    <s-page heading="Authentication error">
+      <s-section>
+        <s-card padding="base">
+          <s-text as="p" tone="critical" variant="bodyMd">
+            {msg}
+          </s-text>
+        </s-card>
+      </s-section>
+    </s-page>
+  );
 }
 
-export function loginErrorMessage(loginErrors: LoginError): LoginErrorMessage {
-  if (loginErrors?.shop === LoginErrorType.MissingShop) {
-    return { shop: "Please enter your shop domain to log in" };
-  } else if (loginErrors?.shop === LoginErrorType.InvalidShop) {
-    return { shop: "Please enter a valid shop domain to log in" };
-  }
-
-  return {};
+export function ErrorBoundary() {
+  return boundary.error(useRouteError());
 }
+
+export const headers: HeadersFunction = (args) => boundary.headers(args);
