@@ -10,45 +10,54 @@ export async function action({ request }: ActionFunctionArgs) {
     if (got !== want) return new Response("Unauthorized", { status: 401 });
   }
 
-  // shops = όλα τα εγκατεστημένα (Settings rows)
   const shops = (await db.settings.findMany({ select: { shop: true } })).map((x) => x.shop);
 
   let markedTotal = 0;
   let enqueuedTotal = 0;
 
-  // Useful debug counts
-  let queuedDueBefore = 0;
-  let queuedDueAfter = 0;
-
   const nowBefore = new Date();
-  queuedDueBefore = await db.callJob.count({
+  const queuedDueBefore = await db.callJob.count({
     where: { status: "QUEUED", scheduledFor: { lte: nowBefore } },
   });
 
+  // per-shop pipeline
   for (const shop of shops) {
-    const settings = await ensureSettings(shop);
+    try {
+      const settings = await ensureSettings(shop);
 
-    const marked = await markAbandonedByDelay(shop, settings.delayMinutes);
-    markedTotal += (marked as any)?.count ?? 0;
+      const marked = await markAbandonedByDelay(shop, settings.delayMinutes);
+      markedTotal += (marked as any)?.count ?? 0;
 
-    const enq = await enqueueCallJobs({
-      shop,
-      enabled: settings.enabled,
-      minOrderValue: settings.minOrderValue,
-      callWindowStart: (settings as any).callWindowStart ?? "09:00",
-      callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
-      delayMinutes: settings.delayMinutes, // ✅ critical
-    } as any);
+      const enq = await enqueueCallJobs({
+        shop,
+        enabled: settings.enabled,
+        minOrderValue: settings.minOrderValue,
+        callWindowStart: (settings as any).callWindowStart ?? "09:00",
+        callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
+        delayMinutes: settings.delayMinutes, // critical
+      } as any);
 
-    enqueuedTotal += (enq as any)?.enqueued ?? 0;
+      enqueuedTotal += (enq as any)?.enqueued ?? 0;
+    } catch (e) {
+      // do not fail the whole cron run because one shop failed
+      await db.cronLog
+        .create({
+          data: {
+            shop,
+            type: "cron_error",
+            message: String((e as any)?.message ?? e).slice(0, 2000),
+          },
+        })
+        .catch(() => null);
+    }
   }
 
   const nowAfter = new Date();
-  queuedDueAfter = await db.callJob.count({
+  const queuedDueAfter = await db.callJob.count({
     where: { status: "QUEUED", scheduledFor: { lte: nowAfter } },
   });
 
-  // Run calls via existing endpoint (/api/run-calls) and SURFACE RESULT
+  // Run calls via existing endpoint (/api/run-calls)
   let runCallsStatus: number | null = null;
   let runCallsBody: any = null;
 
@@ -60,9 +69,11 @@ export async function action({ request }: ActionFunctionArgs) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-run-calls-secret": process.env.RUN_CALLS_SECRET || "",
+        ...(process.env.RUN_CALLS_SECRET
+          ? { "x-run-calls-secret": process.env.RUN_CALLS_SECRET }
+          : {}),
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ source: "cron" }),
     });
 
     runCallsStatus = res.status;
@@ -87,9 +98,6 @@ export async function action({ request }: ActionFunctionArgs) {
       runCallsBody,
       serverNow: new Date().toISOString(),
     }),
-    {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }
+    { status: 200, headers: { "Content-Type": "application/json" } }
   );
 }

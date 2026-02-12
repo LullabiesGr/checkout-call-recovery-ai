@@ -39,7 +39,10 @@ function buildSystemPrompt(args: {
     items.length === 0
       ? "No cart items available."
       : items
-          .map((it: any) => `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`)
+          .map(
+            (it: any) =>
+              `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`
+          )
           .join("\n");
 
   const base = `
@@ -49,7 +52,7 @@ Rules:
 - Never be pushy. Confirm identity. Ask if it's a good time.
 - Use the cart context and total value.
 - If the customer objects, handle objections and offer help.
-- If they want to buy: guide them to complete checkout.
+- If they want to buy: guide them to complete checkout (send link if available, or instruct steps).
 - If they do not want to continue: end politely and mark as not interested.
 - Keep calls short.
 
@@ -80,7 +83,7 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
   });
   if (!job) throw new Error("CallJob not found");
 
-  // ήδη έχει δημιουργηθεί call => μην ξαναδημιουργείς
+  // already created => never create again
   if (job.providerCallId) {
     return { ok: true, providerCallId: job.providerCallId, alreadyCreated: true };
   }
@@ -93,6 +96,7 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
   const settings = await db.settings.findUnique({ where: { shop: params.shop } });
 
   const systemPrompt = buildSystemPrompt({
+    // your schema uses userPrompt, not merchantPrompt
     merchantPrompt: (settings as any)?.userPrompt ?? "",
     checkout: {
       checkoutId: checkout.checkoutId,
@@ -111,7 +115,10 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
 
   const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
 
-  const toNumber = safeString((job as any).phone, "") || safeString((checkout as any).phone, "");
+  const toNumber =
+    safeString((job as any).phone, "").trim() ||
+    safeString((checkout as any).phone, "").trim();
+
   if (!toNumber) {
     await db.callJob.update({
       where: { id: job.id },
@@ -120,13 +127,13 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     throw new Error("Missing phone number on CallJob/Checkout");
   }
 
-  // HARD LOCK: αν κάποιος άλλος το πήρε ήδη, stop
+  // HARD LOCK: ONLY QUEUED -> CALLING (prevents double-attempts + spam)
   const locked = await db.callJob.updateMany({
     where: {
       id: job.id,
       shop: params.shop,
+      status: "QUEUED",
       providerCallId: null,
-      status: { in: ["QUEUED", "CALLING"] },
     },
     data: {
       status: "CALLING",

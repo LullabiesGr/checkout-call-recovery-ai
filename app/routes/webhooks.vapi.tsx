@@ -1,4 +1,4 @@
-// app/routes/webhooks.vapi.ts
+// app/routes/webhooks.vapi.tsx
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
 
@@ -134,7 +134,7 @@ async function analyzeWithOpenAI(args: {
   const model = (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
 
   const system = `
-Return STRICT JSON only.
+Return STRICT JSON only. No markdown.
 
 Schema:
 {
@@ -144,7 +144,12 @@ Schema:
   "reasons": string[],
   "objections": string[],
   "tags": string[],
-  "next_action": { "priority": "high"|"medium"|"low", "action": string, "channel": "call"|"sms"|"email"|"none", "when_minutes": number },
+  "next_action": {
+    "priority": "high" | "medium" | "low",
+    "action": string,
+    "channel": "call" | "sms" | "email" | "none",
+    "when_minutes": number
+  },
   "short_summary": string
 }
 `.trim();
@@ -228,7 +233,6 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const { shop, callJobId, checkoutId, providerCallId } = pickMetadata(body);
 
-  // Identify job (strong match -> weak match)
   const job =
     (shop && callJobId
       ? await db.callJob.findFirst({ where: { shop, id: callJobId } })
@@ -251,9 +255,7 @@ export async function action({ request }: ActionFunctionArgs) {
     asStr(body?.message?.status) ||
     null;
 
-  // ---------- PHASE 1: FAST LIVE STATUS UPDATE ----------
-  // Αν δεν είναι ended event, κάνε μόνο γρήγορο update σε CALLING/FAILED και φύγε.
-  // Αυτό σταματάει το spam (scheduler βλέπει CALLING άμεσα) και δίνει live UI update.
+  // PHASE 1: FAST LIVE UPDATE (prevents scheduler spam + enables live UI)
   if (!isEndedStatus(callStatus)) {
     const fast: any = {
       provider: job.provider ?? "vapi",
@@ -262,23 +264,34 @@ export async function action({ request }: ActionFunctionArgs) {
 
     if (isFailedStatus(callStatus)) fast.status = "FAILED";
     else if (isCallingStatus(callStatus)) fast.status = "CALLING";
-    else if (callStatus) {
-      // unknown status => μην κάνεις downgrade
-      // αφήνεις το status ως έχει
-    }
 
-    // Μην overwrite ολοκληρωμένα jobs με CALLING
+    // never downgrade completed jobs
     if (job.status === "COMPLETED") delete fast.status;
 
-    await db.callJob.update({
-      where: { id: job.id },
-      data: fast,
-    });
+    await db.callJob.update({ where: { id: job.id }, data: fast });
+
+    // transcript chunks can still come while calling; append if present
+    const transcriptChunk =
+      asStr(body?.transcript) ||
+      asStr(body?.message?.transcript) ||
+      asStr(body?.call?.transcript) ||
+      null;
+
+    if (transcriptChunk) {
+      const prev = job.transcript ? String(job.transcript) : "";
+      const merged =
+        prev && !prev.endsWith("\n") ? `${prev}\n${transcriptChunk}` : `${prev}${transcriptChunk}`;
+
+      await db.callJob.update({
+        where: { id: job.id },
+        data: { transcript: merged.slice(0, 20000) },
+      });
+    }
 
     return new Response("OK", { status: 200 });
   }
 
-  // ---------- PHASE 2: END-OF-CALL PROCESSING ----------
+  // PHASE 2: END-OF-CALL
   const endedReason =
     asStr(body?.call?.endedReason) ||
     asStr(body?.endedReason) ||
@@ -333,14 +346,12 @@ export async function action({ request }: ActionFunctionArgs) {
     patch.analysisJson = safeJson(norm.outcomeJson, 9000) ?? undefined;
   }
 
-  const rawCallAnalysis =
-    body?.call?.analysis ?? body?.analysis ?? body?.call?.callAnalysis ?? null;
+  const rawCallAnalysis = body?.call?.analysis ?? body?.analysis ?? body?.call?.callAnalysis ?? null;
   if (!structured && rawCallAnalysis) {
     patch.analysisJson = patch.analysisJson ?? safeJson(rawCallAnalysis, 9000) ?? undefined;
   }
 
-  // OpenAI post-processing μόνο στο END και μόνο αν δεν έχει structured output
-  // και μόνο αν δεν υπάρχει ήδη analysis_v1.
+  // OpenAI post-processing ONLY at end, ONLY if no structured output, ONLY once
   if (!structured && !alreadyHasOpenAI(job)) {
     const transcript =
       (asStr(patch.transcript) || (job.transcript ? String(job.transcript) : "")).trim();
@@ -358,21 +369,14 @@ export async function action({ request }: ActionFunctionArgs) {
       });
 
       if (analysis) {
-        const packed = {
-          type: "analysis_v1",
-          at: new Date().toISOString(),
-          analysis,
-        };
+        const packed = { type: "analysis_v1", at: new Date().toISOString(), analysis };
         patch.outcome = safeJson(packed, 2000) ?? patch.outcome;
         patch.analysisJson = safeJson(packed, 9000) ?? patch.analysisJson;
       }
     }
   }
 
-  await db.callJob.update({
-    where: { id: job.id },
-    data: patch,
-  });
+  await db.callJob.update({ where: { id: job.id }, data: patch });
 
   return new Response("OK", { status: 200 });
 }

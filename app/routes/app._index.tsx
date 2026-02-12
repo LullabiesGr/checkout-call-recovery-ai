@@ -1,11 +1,7 @@
 // app/routes/app._index.tsx
-import type {
-  ActionFunctionArgs,
-  HeadersFunction,
-  LoaderFunctionArgs,
-} from "react-router";
-import { Form, useLoaderData, useRouteError } from "react-router";
-import { useMemo, useState } from "react";
+import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
+import { Form, useLoaderData, useRouteError, useSubmit } from "react-router";
+import { useEffect, useMemo, useState } from "react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
@@ -16,9 +12,6 @@ import {
   syncAbandonedCheckoutsFromShopify,
 } from "../callRecovery.server";
 import { createVapiCallForJob } from "../callProvider.server";
-import { useEffect } from "react";
-import { useSubmit } from "react-router";
-
 
 type LoaderData = {
   shop: string;
@@ -29,11 +22,9 @@ type LoaderData = {
     potentialRevenue7d: number;
     queuedCalls: number;
     completedCalls7d: number;
-
     recoveredCount7d: number;
     recoveredRevenue7d: number;
   };
-
   recentJobs: Array<{
     id: string;
     checkoutId: string;
@@ -43,16 +34,13 @@ type LoaderData = {
     createdAt: string;
     outcome?: string | null;
 
-    // attribution (earned)
     attributedAt?: string | null;
     attributedOrderId?: string | null;
     attributedAmount?: number | null;
 
-    // joined
     customerName?: string | null;
     cartPreview?: string | null;
 
-    // analysis extracted from outcome-json
     sentiment?: string | null;
     tagsCsv?: string | null;
     reason?: string | null;
@@ -62,7 +50,6 @@ type LoaderData = {
     recordingUrl?: string | null;
     transcript?: string | null;
 
-    // extra from structured outcome json (if present)
     answered?: boolean | null;
     voicemail?: boolean | null;
     buyProbability?: number | null;
@@ -114,9 +101,7 @@ function parseTags(tagsCsv?: string | null): string[] {
     .slice(0, 10);
 }
 
-function toneFromSentiment(
-  s?: string | null
-): "success" | "warning" | "critical" | "info" {
+function toneFromSentiment(s?: string | null): "success" | "warning" | "critical" | "info" {
   const v = String(s || "").toLowerCase();
   if (v.includes("positive") || v === "pos" || v === "yes") return "success";
   if (v.includes("negative") || v === "neg" || v === "no") return "critical";
@@ -152,9 +137,7 @@ function parseOutcomeJson(outcome?: string | null): OutcomeAnalysis {
     if (!obj || typeof obj !== "object") return {};
 
     const tagsArr = Array.isArray((obj as any).tags)
-      ? (obj as any).tags
-          .map((x: any) => String(x ?? "").trim())
-          .filter(Boolean)
+      ? (obj as any).tags.map((x: any) => String(x ?? "").trim()).filter(Boolean)
       : null;
 
     const buyProb = Number((obj as any).buyProbability);
@@ -171,14 +154,11 @@ function parseOutcomeJson(outcome?: string | null): OutcomeAnalysis {
       transcript: (obj as any).transcript ? String((obj as any).transcript) : null,
 
       answered: typeof (obj as any).answered === "boolean" ? (obj as any).answered : null,
-      voicemail:
-        typeof (obj as any).voicemail === "boolean" ? (obj as any).voicemail : null,
+      voicemail: typeof (obj as any).voicemail === "boolean" ? (obj as any).voicemail : null,
       buyProbability,
       summary: (obj as any).summary ? String((obj as any).summary) : null,
       callOutcome: (obj as any).callOutcome ? String((obj as any).callOutcome) : null,
-      customerIntent: (obj as any).customerIntent
-        ? String((obj as any).customerIntent)
-        : null,
+      customerIntent: (obj as any).customerIntent ? String((obj as any).customerIntent) : null,
     };
   } catch {
     return {};
@@ -211,7 +191,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const settings = await ensureSettings(shop);
 
-  // Pipeline
   await syncAbandonedCheckoutsFromShopify({ admin, shop, limit: 50 });
   await markAbandonedByDelay(shop, settings.delayMinutes);
 
@@ -246,7 +225,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     db.callJob.count({
       where: { shop, status: "COMPLETED", createdAt: { gte: since } },
     }),
-
     db.callJob.aggregate({
       where: { shop, attributedAt: { gte: since } },
       _sum: { attributedAmount: true },
@@ -254,7 +232,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     db.callJob.count({
       where: { shop, attributedAt: { gte: since } },
     }),
-
     db.callJob.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
@@ -267,7 +244,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         attempts: true,
         createdAt: true,
         outcome: true,
-
         attributedAt: true,
         attributedOrderId: true,
         attributedAmount: true,
@@ -275,7 +251,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
   ]);
 
-  // Join Checkout => customer/cart
   const ids = recentJobs.map((j) => j.checkoutId);
   const related =
     ids.length === 0
@@ -298,7 +273,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       potentialRevenue7d,
       queuedCalls,
       completedCalls7d,
-
       recoveredCount7d,
       recoveredRevenue7d,
     },
@@ -311,6 +285,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         ...j,
         scheduledFor: j.scheduledFor.toISOString(),
         createdAt: j.createdAt.toISOString(),
+
         customerName: c?.customerName ?? null,
         cartPreview: buildCartPreview(c?.itemsJson ?? null),
 
@@ -345,8 +320,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const fd = await request.formData();
   const intent = String(fd.get("intent") ?? "");
 
-  const redirectBack = () =>
-    new Response(null, { status: 303, headers: { Location: "/app" } });
+  const redirectBack = () => new Response(null, { status: 303, headers: { Location: "/app" } });
 
   if (intent === "refresh") return redirectBack();
 
@@ -362,15 +336,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     for (const job of jobs) {
+      // IMPORTANT: do NOT increment attempts here (callProvider hard-lock does it)
       const locked = await db.callJob.updateMany({
         where: { id: job.id, shop, status: "QUEUED" },
         data: {
-  status: "CALLING",
-  // attempts increment ΜΟΝΟ στο callProvider (hard lock)
-  provider: vapiOk ? "vapi" : "sim",
-  outcome: null,
-}
- as any,
+          status: "CALLING",
+          provider: vapiOk ? "vapi" : "sim",
+          outcome: null,
+        },
       });
 
       if (locked.count === 0) continue;
@@ -389,7 +362,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       try {
         await createVapiCallForJob({ shop, callJobId: job.id });
       } catch (e: any) {
-        const attemptsAfter = (job.attempts ?? 0) + 1;
+        const attemptsAfter = (job.attempts ?? 0) + 1; // job.attempts is stale; used only for decision
         const maxAttempts = settings.maxAttempts ?? 2;
 
         if (attemptsAfter >= maxAttempts) {
@@ -397,7 +370,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             where: { id: job.id },
             data: {
               status: "FAILED",
-              outcome: `ERROR: ${String(e?.message ?? e)}`,
+              outcome: `ERROR: ${String(e?.message ?? e)}`.slice(0, 2000),
             },
           });
         } else {
@@ -428,8 +401,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await db.callJob.updateMany({
         where: { id: callJobId, shop },
         data: {
-          outcome:
-            "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)",
+          outcome: "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)",
         },
       });
       return redirectBack();
@@ -440,7 +412,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } catch (e: any) {
       await db.callJob.updateMany({
         where: { id: callJobId, shop },
-        data: { outcome: `ERROR: ${String(e?.message ?? e)}` },
+        data: { outcome: `ERROR: ${String(e?.message ?? e)}`.slice(0, 2000) },
       });
     }
 
@@ -451,8 +423,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Dashboard() {
-  const { shop, stats, recentJobs, currency, vapiConfigured } =
-    useLoaderData<typeof loader>();
+  const { shop, stats, recentJobs, currency, vapiConfigured } = useLoaderData<typeof loader>();
 
   const money = (n: number) =>
     new Intl.NumberFormat(undefined, {
@@ -461,23 +432,21 @@ export default function Dashboard() {
       maximumFractionDigits: 2,
     }).format(n);
 
-const submit = useSubmit();
+  const submit = useSubmit();
 
-useEffect(() => {
-  const hasCalling = recentJobs.some((j) => j.status === "CALLING");
-  if (!hasCalling) return;
+  useEffect(() => {
+    const hasCalling = recentJobs.some((j) => j.status === "CALLING");
+    if (!hasCalling) return;
 
-  const id = setInterval(() => {
-    const fd = new FormData();
-    fd.set("intent", "refresh");
-    submit(fd, { method: "post" });
-  }, 5000);
+    const id = setInterval(() => {
+      const fd = new FormData();
+      fd.set("intent", "refresh");
+      submit(fd, { method: "post" });
+    }, 5000);
 
-  return () => clearInterval(id);
-}, [recentJobs, submit]);
+    return () => clearInterval(id);
+  }, [recentJobs, submit]);
 
-
-  // UI controls (client-side)
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState<
     "ALL" | "QUEUED" | "CALLING" | "COMPLETED" | "FAILED" | "CANCELED"
@@ -557,7 +526,6 @@ useEffect(() => {
   return (
     <s-page heading="Checkout Call Recovery AI">
       <s-stack gap="base">
-        {/* Top bar */}
         <s-card padding="base" style={ui.card as any}>
           <s-stack gap="base">
             <s-stack direction="inline" gap="base" align="center">
@@ -580,13 +548,10 @@ useEffect(() => {
               </Form>
 
               <s-text as="p" tone="subdued">
-                {vapiConfigured
-                  ? "Vapi enabled."
-                  : "Vapi not configured in ENV — calls will be simulated."}
+                {vapiConfigured ? "Vapi enabled." : "Vapi not configured in ENV — calls will be simulated."}
               </s-text>
             </s-stack>
 
-            {/* Filters */}
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <input
                 value={q}
@@ -609,20 +574,12 @@ useEffect(() => {
               </select>
 
               <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={onlyEarned}
-                  onChange={(e) => setOnlyEarned(e.target.checked)}
-                />
+                <input type="checkbox" checked={onlyEarned} onChange={(e) => setOnlyEarned(e.target.checked)} />
                 <span style={{ fontSize: 13 }}>Only earned</span>
               </label>
 
               <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={onlyAnswered}
-                  onChange={(e) => setOnlyAnswered(e.target.checked)}
-                />
+                <input type="checkbox" checked={onlyAnswered} onChange={(e) => setOnlyAnswered(e.target.checked)} />
                 <span style={{ fontSize: 13 }}>Only answered</span>
               </label>
 
@@ -633,7 +590,6 @@ useEffect(() => {
           </s-stack>
         </s-card>
 
-        {/* Snapshot */}
         <s-section heading="7-day snapshot">
           <s-inline-grid columns={{ xs: 1, sm: 2, md: 5 }} gap="base">
             <s-card padding="base" style={ui.card as any}>
@@ -708,7 +664,6 @@ useEffect(() => {
           </s-inline-grid>
         </s-section>
 
-        {/* Table */}
         <s-section heading="Recent call jobs">
           <s-card padding="base" style={ui.card as any}>
             {rows.length === 0 ? (
@@ -717,13 +672,7 @@ useEffect(() => {
               </s-text>
             ) : (
               <div style={{ overflowX: "auto" }}>
-                <table
-                  style={{
-                    width: "100%",
-                    borderCollapse: "separate",
-                    borderSpacing: "0 10px",
-                  }}
-                >
+                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 10px" }}>
                   <thead>
                     <tr style={{ textAlign: "left", fontSize: 12, opacity: 0.75 }}>
                       <th style={{ padding: "0 10px" }}>Job</th>
@@ -740,9 +689,8 @@ useEffect(() => {
                     {rows.map((j) => {
                       const tags = parseTags(j.tagsCsv ?? null);
                       const tone = toneFromSentiment(j.sentiment ?? null);
-                      const detailsId = `details-${j.id}`;
-
                       const buyProbability = clamp01to100(j.buyProbability);
+
                       const answeredLabel =
                         j.answered === true ? "answered" : j.voicemail === true ? "voicemail" : "no_answer";
 
@@ -765,7 +713,6 @@ useEffect(() => {
                             boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
                           }}
                         >
-                          {/* Job */}
                           <td style={{ padding: "12px 10px", verticalAlign: "top" }}>
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -786,25 +733,19 @@ useEffect(() => {
                               </div>
 
                               <div style={{ fontSize: 12, opacity: 0.72 }}>
-                                attempts: {j.attempts} · created:{" "}
-                                {new Date(j.createdAt).toLocaleString()}
+                                attempts: {j.attempts} · created: {new Date(j.createdAt).toLocaleString()}
                               </div>
 
                               {safeText(j.summary, 110) ? (
-                                <div style={{ fontSize: 13, opacity: 0.9 }}>
-                                  {safeText(j.summary, 110)}
-                                </div>
+                                <div style={{ fontSize: 13, opacity: 0.9 }}>{safeText(j.summary, 110)}</div>
                               ) : null}
                             </div>
                           </td>
 
-                          {/* Customer / Cart */}
                           <td style={{ padding: "12px 10px", verticalAlign: "top", minWidth: 260 }}>
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               <div style={{ fontWeight: 700 }}>{j.customerName ?? "-"}</div>
-                              <div style={{ fontSize: 13, opacity: 0.85 }}>
-                                {j.cartPreview ?? "-"}
-                              </div>
+                              <div style={{ fontSize: 13, opacity: 0.85 }}>{j.cartPreview ?? "-"}</div>
 
                               {tags.length ? (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -820,31 +761,23 @@ useEffect(() => {
                             </div>
                           </td>
 
-                          {/* Schedule */}
                           <td style={{ padding: "12px 10px", verticalAlign: "top", whiteSpace: "nowrap" }}>
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                              <div style={{ fontWeight: 700 }}>
-                                {new Date(j.scheduledFor).toLocaleString()}
-                              </div>
+                              <div style={{ fontWeight: 700 }}>{new Date(j.scheduledFor).toLocaleString()}</div>
                               <div style={ui.small}>scheduled</div>
                             </div>
                           </td>
 
-                          {/* Call */}
                           <td style={{ padding: "12px 10px", verticalAlign: "top", minWidth: 190 }}>
                             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                <s-badge tone={tone as any}>
-                                  {j.sentiment ? String(j.sentiment) : "-"}
-                                </s-badge>
+                                <s-badge tone={tone as any}>{j.sentiment ? String(j.sentiment) : "-"}</s-badge>
                                 <span style={ui.chip}>{answeredLabel}</span>
                               </div>
 
                               {buyProbability != null ? (
                                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                  <div style={{ fontSize: 12, opacity: 0.75 }}>
-                                    buy probability
-                                  </div>
+                                  <div style={{ fontSize: 12, opacity: 0.75 }}>buy probability</div>
                                   <div
                                     style={{
                                       height: 8,
@@ -862,9 +795,7 @@ useEffect(() => {
                                       }}
                                     />
                                   </div>
-                                  <div style={{ fontSize: 12, opacity: 0.8 }}>
-                                    {buyProbability}%
-                                  </div>
+                                  <div style={{ fontSize: 12, opacity: 0.8 }}>{buyProbability}%</div>
                                 </div>
                               ) : (
                                 <div style={ui.small}>no probability</div>
@@ -872,7 +803,6 @@ useEffect(() => {
                             </div>
                           </td>
 
-                          {/* Insights */}
                           <td style={{ padding: "12px 10px", verticalAlign: "top", minWidth: 320 }}>
                             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                               {safeText(j.reason, 140) ? (
@@ -890,16 +820,12 @@ useEffect(() => {
                               )}
 
                               {safeText(j.followUp, 140) ? (
-                                <div style={{ fontSize: 12, opacity: 0.8 }}>
-                                  {safeText(j.followUp, 140)}
-                                </div>
+                                <div style={{ fontSize: 12, opacity: 0.8 }}>{safeText(j.followUp, 140)}</div>
                               ) : null}
 
                               {hasDetails ? (
-                                <details id={detailsId}>
-                                  <summary style={{ cursor: "pointer", fontSize: 12, opacity: 0.8 }}>
-                                    Details
-                                  </summary>
+                                <details>
+                                  <summary style={{ cursor: "pointer", fontSize: 12, opacity: 0.8 }}>Details</summary>
                                   <div style={{ paddingTop: 10, fontSize: 13, lineHeight: 1.45 }}>
                                     {j.callOutcome ? (
                                       <div style={{ marginBottom: 8 }}>
@@ -952,17 +878,12 @@ useEffect(() => {
                             </div>
                           </td>
 
-                          {/* Earned */}
                           <td style={{ padding: "12px 10px", verticalAlign: "top", whiteSpace: "nowrap" }}>
                             {j.attributedAmount != null ? (
                               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                <div style={{ fontWeight: 900, fontSize: 14 }}>
-                                  {money(j.attributedAmount)}
-                                </div>
+                                <div style={{ fontWeight: 900, fontSize: 14 }}>{money(j.attributedAmount)}</div>
                                 {j.attributedOrderId ? (
-                                  <div style={{ fontSize: 12, opacity: 0.75 }}>
-                                    order {j.attributedOrderId}
-                                  </div>
+                                  <div style={{ fontSize: 12, opacity: 0.75 }}>order {j.attributedOrderId}</div>
                                 ) : null}
                                 {j.attributedAt ? (
                                   <div style={{ fontSize: 12, opacity: 0.75 }}>
@@ -975,7 +896,6 @@ useEffect(() => {
                             )}
                           </td>
 
-                          {/* Actions */}
                           <td style={{ padding: "12px 10px", verticalAlign: "top" }}>
                             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                               <Form method="post">
@@ -998,9 +918,7 @@ useEffect(() => {
                               </Form>
 
                               {j.status !== "QUEUED" ? (
-                                <div style={{ fontSize: 12, opacity: 0.7 }}>
-                                  manual call only for queued
-                                </div>
+                                <div style={{ fontSize: 12, opacity: 0.7 }}>manual call only for queued</div>
                               ) : null}
                             </div>
                           </td>
