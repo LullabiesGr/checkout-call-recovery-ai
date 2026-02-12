@@ -33,8 +33,9 @@ function nextTimeWithinWindow(now: Date, startHHMM: string, endHHMM: string, lea
   next.setSeconds(0, 0);
   next.setHours(Math.floor(windowStart / 60), windowStart % 60, 0, 0);
 
-  if (minsNow > windowStart) next.setDate(next.getDate() + 1);
-  if (minsNow > windowEnd) next.setDate(next.getDate() + 1);
+    if (minsNow > windowEnd) next.setDate(next.getDate() + 1);
+  else if (minsNow > windowStart) next.setDate(next.getDate() + 1);
+
 
   return next;
 }
@@ -197,7 +198,9 @@ export async function enqueueCallJobs(params: {
   minOrderValue: number;
   callWindowStart: string;
   callWindowEnd: string;
+  delayMinutes: number;
 }) {
+
   const { shop, enabled, minOrderValue, callWindowStart, callWindowEnd } = params;
   if (!enabled) return { enqueued: 0 };
 
@@ -228,7 +231,9 @@ export async function enqueueCallJobs(params: {
     });
     if (exists) continue;
 
-    const scheduledFor = nextTimeWithinWindow(new Date(), callWindowStart, callWindowEnd, 2);
+    const lead = Math.max(0, Number(params.delayMinutes ?? 0));
+    const scheduledFor = nextTimeWithinWindow(new Date(), callWindowStart, callWindowEnd, lead);
+
 
     await db.callJob.create({
       data: {

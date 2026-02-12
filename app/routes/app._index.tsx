@@ -88,6 +88,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     minOrderValue: settings.minOrderValue,
     callWindowStart: (settings as any).callWindowStart ?? "09:00",
     callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
+    delayMinutes: settings.delayMinutes,
   });
 
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
