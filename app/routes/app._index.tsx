@@ -39,7 +39,7 @@ type LoaderData = {
     customerName?: string | null;
     cartPreview?: string | null;
 
-    // analysis (optional columns)
+    // analysis extracted from outcome-json (no DB migration needed)
     sentiment?: string | null;
     tagsCsv?: string | null;
     reason?: string | null;
@@ -80,7 +80,6 @@ function isVapiConfiguredFromEnv() {
 
 function normalizeCurrency(code: string): string {
   const v = String(code || "USD").toUpperCase().trim();
-  // Intl throws if invalid. Hard clamp to 3 letters A-Z.
   if (!/^[A-Z]{3}$/.test(v)) return "USD";
   return v;
 }
@@ -91,15 +90,56 @@ function parseTags(tagsCsv?: string | null): string[] {
     .split(",")
     .map((x) => x.trim())
     .filter(Boolean)
-    .slice(0, 8);
+    .slice(0, 10);
 }
 
-function toneFromSentiment(s?: string | null): "success" | "warning" | "critical" | "info" {
+function toneFromSentiment(
+  s?: string | null
+): "success" | "warning" | "critical" | "info" {
   const v = String(s || "").toLowerCase();
   if (v.includes("positive") || v === "pos" || v === "yes") return "success";
   if (v.includes("negative") || v === "neg" || v === "no") return "critical";
   if (v.includes("neutral")) return "warning";
   return "info";
+}
+
+type OutcomeAnalysis = {
+  sentiment?: string | null;
+  tags?: string[] | null;
+  reason?: string | null;
+  nextAction?: string | null;
+  followUp?: string | null;
+  endedReason?: string | null;
+  recordingUrl?: string | null;
+  transcript?: string | null;
+};
+
+function parseOutcomeJson(outcome?: string | null): OutcomeAnalysis {
+  const raw = String(outcome ?? "").trim();
+  if (!raw) return {};
+  if (!raw.startsWith("{")) return {};
+
+  try {
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object") return {};
+
+    const tagsArr = Array.isArray((obj as any).tags)
+      ? (obj as any).tags.map((x: any) => String(x ?? "").trim()).filter(Boolean)
+      : null;
+
+    return {
+      sentiment: (obj as any).sentiment ? String((obj as any).sentiment) : null,
+      tags: tagsArr,
+      reason: (obj as any).reason ? String((obj as any).reason) : null,
+      nextAction: (obj as any).nextAction ? String((obj as any).nextAction) : null,
+      followUp: (obj as any).followUp ? String((obj as any).followUp) : null,
+      endedReason: (obj as any).endedReason ? String((obj as any).endedReason) : null,
+      recordingUrl: (obj as any).recordingUrl ? String((obj as any).recordingUrl) : null,
+      transcript: (obj as any).transcript ? String((obj as any).transcript) : null,
+    };
+  } catch {
+    return {};
+  }
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -152,16 +192,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         attempts: true,
         createdAt: true,
         outcome: true,
-
-        // analysis (may not exist in some envs; using "as any" at read time is OK)
-        sentiment: true as any,
-        tagsCsv: true as any,
-        reason: true as any,
-        nextAction: true as any,
-        followUp: true as any,
-        endedReason: true as any,
-        recordingUrl: true as any,
-        transcript: true as any,
       },
     }),
   ]);
@@ -189,22 +219,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       queuedCalls,
       completedCalls7d,
     },
-    recentJobs: recentJobs.map((j: any) => {
+    recentJobs: recentJobs.map((j) => {
       const c = cMap.get(j.checkoutId);
+      const a = parseOutcomeJson(j.outcome ?? null);
+      const tagsCsv = a.tags && a.tags.length ? a.tags.slice(0, 10).join(", ") : null;
+
       return {
         ...j,
         scheduledFor: j.scheduledFor.toISOString(),
         createdAt: j.createdAt.toISOString(),
         customerName: c?.customerName ?? null,
         cartPreview: buildCartPreview(c?.itemsJson ?? null),
-        sentiment: j.sentiment ?? null,
-        tagsCsv: j.tagsCsv ?? null,
-        reason: j.reason ?? null,
-        nextAction: j.nextAction ?? null,
-        followUp: j.followUp ?? null,
-        endedReason: j.endedReason ?? null,
-        recordingUrl: j.recordingUrl ?? null,
-        transcript: j.transcript ?? null,
+
+        sentiment: a.sentiment ?? null,
+        tagsCsv,
+        reason: a.reason ?? null,
+        nextAction: a.nextAction ?? null,
+        followUp: a.followUp ?? null,
+        endedReason: a.endedReason ?? null,
+        recordingUrl: a.recordingUrl ?? null,
+        transcript: a.transcript ?? null,
       };
     }),
   } satisfies LoaderData;
@@ -456,7 +490,13 @@ export default function Dashboard() {
               </s-text>
             ) : (
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 10px" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "separate",
+                    borderSpacing: "0 10px",
+                  }}
+                >
                   <thead>
                     <tr style={{ textAlign: "left", fontSize: 12, opacity: 0.7 }}>
                       <th style={{ padding: "0 10px" }}>Checkout</th>
@@ -486,18 +526,32 @@ export default function Dashboard() {
                             boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
                           }}
                         >
-                          <td style={{ padding: "12px 10px", verticalAlign: "top", whiteSpace: "nowrap" }}>
+                          <td
+                            style={{
+                              padding: "12px 10px",
+                              verticalAlign: "top",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
                             {j.checkoutId}
-                            <div style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}>
+                            <div
+                              style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}
+                            >
                               {j.outcome ?? "-"}
                             </div>
 
-                            {(j.reason || j.transcript || j.endedReason || j.recordingUrl) ? (
+                            {j.reason ||
+                            j.transcript ||
+                            j.endedReason ||
+                            j.recordingUrl ? (
                               <div style={{ marginTop: 10 }}>
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    const el = document.getElementById(detailsId) as HTMLDetailsElement | null;
+                                    const el =
+                                      document.getElementById(
+                                        detailsId
+                                      ) as HTMLDetailsElement | null;
                                     if (el) el.open = !el.open;
                                   }}
                                   style={{
@@ -515,10 +569,18 @@ export default function Dashboard() {
                             ) : null}
 
                             <details id={detailsId} style={{ marginTop: 10 }}>
-                              <summary style={{ cursor: "pointer", fontSize: 12, opacity: 0.7 }}>
+                              <summary
+                                style={{
+                                  cursor: "pointer",
+                                  fontSize: 12,
+                                  opacity: 0.7,
+                                }}
+                              >
                                 Expand
                               </summary>
-                              <div style={{ paddingTop: 10, fontSize: 13, lineHeight: 1.4 }}>
+                              <div
+                                style={{ paddingTop: 10, fontSize: 13, lineHeight: 1.4 }}
+                              >
                                 {j.endedReason ? (
                                   <div style={{ marginBottom: 8 }}>
                                     <strong>Ended:</strong> {j.endedReason}
@@ -540,7 +602,11 @@ export default function Dashboard() {
                                 {j.recordingUrl ? (
                                   <div style={{ marginBottom: 8 }}>
                                     <strong>Recording:</strong>{" "}
-                                    <a href={j.recordingUrl} target="_blank" rel="noreferrer">
+                                    <a
+                                      href={j.recordingUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
                                       Open
                                     </a>
                                   </div>
@@ -571,18 +637,32 @@ export default function Dashboard() {
                             {j.customerName ?? "-"}
                           </td>
 
-                          <td style={{ padding: "12px 10px", verticalAlign: "top", minWidth: 220 }}>
+                          <td
+                            style={{
+                              padding: "12px 10px",
+                              verticalAlign: "top",
+                              minWidth: 220,
+                            }}
+                          >
                             {j.cartPreview ?? "-"}
                           </td>
 
                           <td style={{ padding: "12px 10px", verticalAlign: "top" }}>
                             <s-badge>{j.status}</s-badge>
-                            <div style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}>
+                            <div
+                              style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}
+                            >
                               attempts: {j.attempts}
                             </div>
                           </td>
 
-                          <td style={{ padding: "12px 10px", verticalAlign: "top", whiteSpace: "nowrap" }}>
+                          <td
+                            style={{
+                              padding: "12px 10px",
+                              verticalAlign: "top",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
                             {new Date(j.scheduledFor).toLocaleString()}
                           </td>
 
@@ -592,7 +672,13 @@ export default function Dashboard() {
                             </s-badge>
                           </td>
 
-                          <td style={{ padding: "12px 10px", verticalAlign: "top", minWidth: 200 }}>
+                          <td
+                            style={{
+                              padding: "12px 10px",
+                              verticalAlign: "top",
+                              minWidth: 200,
+                            }}
+                          >
                             {tags.length === 0 ? (
                               <span style={{ opacity: 0.6 }}>-</span>
                             ) : (
@@ -615,12 +701,24 @@ export default function Dashboard() {
                             )}
                           </td>
 
-                          <td style={{ padding: "12px 10px", verticalAlign: "top", minWidth: 280 }}>
+                          <td
+                            style={{
+                              padding: "12px 10px",
+                              verticalAlign: "top",
+                              minWidth: 280,
+                            }}
+                          >
                             {j.nextAction ? (
                               <div>
                                 <div style={{ fontWeight: 700 }}>{j.nextAction}</div>
                                 {j.followUp ? (
-                                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+                                  <div
+                                    style={{
+                                      marginTop: 6,
+                                      fontSize: 12,
+                                      opacity: 0.75,
+                                    }}
+                                  >
                                     {j.followUp}
                                   </div>
                                 ) : null}
@@ -668,4 +766,5 @@ export function ErrorBoundary() {
   return boundary.error(useRouteError());
 }
 
-export const headers: HeadersFunction = (headersArgs) => boundary.headers(headersArgs);
+export const headers: HeadersFunction = (headersArgs) =>
+  boundary.headers(headersArgs);

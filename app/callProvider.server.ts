@@ -7,6 +7,10 @@ function requiredEnv(name: string) {
   return v;
 }
 
+function safeString(v: unknown, fallback = ""): string {
+  return typeof v === "string" ? v : fallback;
+}
+
 function buildSystemPrompt(args: {
   merchantPrompt?: string | null;
   checkout: {
@@ -35,7 +39,10 @@ function buildSystemPrompt(args: {
     items.length === 0
       ? "No cart items available."
       : items
-          .map((it: any) => `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`)
+          .map(
+            (it: any) =>
+              `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`
+          )
           .join("\n");
 
   const base = `
@@ -96,7 +103,22 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     },
   });
 
-  // Lock job -> CALLING
+  const webhookUrl =
+    `${APP_URL.replace(/\/$/, "")}` +
+    `/webhooks/vapi?secret=${encodeURIComponent(VAPI_WEBHOOK_SECRET)}`;
+
+  const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
+
+  const toNumber = safeString((job as any).phone, "") || safeString((checkout as any).phone, "");
+  if (!toNumber) {
+    await db.callJob.update({
+      where: { id: job.id },
+      data: { status: "FAILED", outcome: "MISSING_PHONE_NUMBER" },
+    });
+    throw new Error("Missing phone number on CallJob/Checkout");
+  }
+
+  // lock job -> CALLING
   await db.callJob.update({
     where: { id: job.id },
     data: {
@@ -107,9 +129,11 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     },
   });
 
-  const webhookUrl = `${APP_URL.replace(/\/$/, "")}/webhooks/vapi?secret=${encodeURIComponent(
-    VAPI_WEBHOOK_SECRET
-  )}`;
+  const callMetadata = {
+    shop: params.shop,
+    callJobId: job.id,
+    checkoutId: job.checkoutId,
+  };
 
   const res = await fetch("https://api.vapi.ai/call/phone", {
     method: "POST",
@@ -123,15 +147,15 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
       assistantId: VAPI_ASSISTANT_ID,
 
       customer: {
-        number: job.phone,
+        number: toNumber,
         name: checkout.customerName ?? undefined,
       },
 
-      // dynamic per-call override (prompt only; assistant stays central)
+      // per-call override
       assistant: {
         model: {
           provider: "openai",
-          model: "gpt-4o-mini",
+          model: OPENAI_MODEL,
           messages: [
             { role: "system", content: systemPrompt },
             {
@@ -143,30 +167,29 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
         },
 
         serverUrl: webhookUrl,
-        serverMessages: ["status-update", "end-of-call-report", 'transcript[transcriptType="final"]',
-        metadata: {
-          shop: params.shop,
-          callJobId: job.id,
-          checkoutId: job.checkoutId,
-        },
+        // κρατάς σκέτα event names (όχι selectors)
+        serverMessages: ["status-update", "end-of-call-report", "transcript"],
+
+        metadata: callMetadata,
       },
 
-      metadata: {
-        shop: params.shop,
-        callJobId: job.id,
-        checkoutId: job.checkoutId,
-      },
+      metadata: callMetadata,
     }),
   });
 
-  const json = await res.json().catch(() => null);
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    json = null;
+  }
 
   if (!res.ok) {
     await db.callJob.update({
       where: { id: job.id },
       data: {
         status: "FAILED",
-        outcome: `VAPI_ERROR: ${JSON.stringify(json)}`,
+        outcome: `VAPI_ERROR: ${JSON.stringify(json)}`.slice(0, 2000),
       },
     });
     throw new Error(`Vapi create call failed: ${JSON.stringify(json)}`);
@@ -178,7 +201,7 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     where: { id: job.id },
     data: {
       providerCallId: providerCallId || null,
-      outcome: `VAPI_CALL_CREATED`,
+      outcome: "VAPI_CALL_CREATED",
     },
   });
 
@@ -189,7 +212,7 @@ export async function createVapiCallForJob(params: { shop: string; callJobId: st
   return startVapiCallForJob(params);
 }
 
-export async function placeCall(params: {
+export async function placeCall(_: {
   shop: string;
   phone: string;
   checkoutId: string;
