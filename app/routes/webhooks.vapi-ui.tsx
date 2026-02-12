@@ -55,30 +55,6 @@ function pickMetadata(body: any) {
   return { shop, callJobId, checkoutId, providerCallId };
 }
 
-function extractTranscript(payload: any): string | null {
-  const direct =
-    payload?.transcript ??
-    payload?.analysis?.transcript ??
-    payload?.message?.transcript ??
-    payload?.data?.transcript ??
-    payload?.call?.transcript;
-
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
-
-  const turns =
-    payload?.conversation?.turns ?? payload?.turns ?? payload?.messages ?? payload?.call?.messages;
-  if (Array.isArray(turns)) {
-    const text = turns
-      .map((t: any) => t?.text ?? t?.content ?? t?.message ?? "")
-      .map((s: any) => (typeof s === "string" ? s : s == null ? "" : String(s)).trim())
-      .filter(Boolean)
-      .join("\n");
-    if (text.trim()) return text.trim();
-  }
-
-  return null;
-}
-
 function normalizeOutcomeFromStructured(structured: any) {
   const o = structured ?? {};
 
@@ -121,26 +97,6 @@ function normalizeOutcomeFromStructured(structured: any) {
 
   const reason = reasonParts.length ? reasonParts.join(" · ") : null;
 
-  const keyQuotes = Array.isArray(o.keyQuotes)
-    ? o.keyQuotes.slice(0, 5)
-    : asStr(o.keyQuotesText)
-    ? String(o.keyQuotesText)
-        .split("|")
-        .map((x) => x.trim())
-        .filter(Boolean)
-        .slice(0, 5)
-    : [];
-
-  const issuesToFix = Array.isArray(o.issuesToFix)
-    ? o.issuesToFix.slice(0, 5)
-    : asStr(o.issuesToFixText)
-    ? String(o.issuesToFixText)
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean)
-        .slice(0, 5)
-    : [];
-
   const outcomeJson = {
     sentiment,
     tags,
@@ -154,8 +110,6 @@ function normalizeOutcomeFromStructured(structured: any) {
     callOutcome,
     customerIntent: intent,
     tone: asStr(o.tone),
-    keyQuotes,
-    issuesToFix,
   };
 
   return {
@@ -180,9 +134,7 @@ async function analyzeWithOpenAI(args: {
   const model = (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
 
   const system = `
-You analyze a phone call between a merchant AI agent and a customer about an abandoned Shopify checkout.
-
-Return STRICT JSON only. No markdown.
+Return STRICT JSON only.
 
 Schema:
 {
@@ -192,12 +144,7 @@ Schema:
   "reasons": string[],
   "objections": string[],
   "tags": string[],
-  "next_action": {
-    "priority": "high" | "medium" | "low",
-    "action": string,
-    "channel": "call" | "sms" | "email" | "none",
-    "when_minutes": number
-  },
+  "next_action": { "priority": "high"|"medium"|"low", "action": string, "channel": "call"|"sms"|"email"|"none", "when_minutes": number },
   "short_summary": string
 }
 `.trim();
@@ -240,25 +187,34 @@ ${args.transcript}
   }
 }
 
-function isEndEvent(body: any): boolean {
-  const type = asStr(body?.type) || asStr(body?.event) || "";
-  const callStatus =
-    asStr(body?.call?.status) ||
-    asStr(body?.status) ||
-    asStr(body?.message?.status) ||
-    "";
+function isEndedStatus(s: string | null): boolean {
+  if (!s) return false;
+  const u = s.toUpperCase();
+  return u.includes("ENDED") || u.includes("COMPLETED") || u.includes("FINISHED");
+}
 
-  const lowered = safeJson(body, 20000)?.toLowerCase() ?? "";
+function isFailedStatus(s: string | null): boolean {
+  if (!s) return false;
+  const u = s.toUpperCase();
+  return u.includes("FAILED") || u.includes("ERROR");
+}
 
-  if (type.toLowerCase().includes("end-of-call")) return true;
+function isCallingStatus(s: string | null): boolean {
+  if (!s) return false;
+  const u = s.toUpperCase();
+  return (
+    u.includes("IN_PROGRESS") ||
+    u.includes("CALLING") ||
+    u.includes("RINGING") ||
+    u.includes("QUEUED") ||
+    u.includes("INITIATED") ||
+    u.includes("CONNECTED")
+  );
+}
 
-  const s = callStatus.toUpperCase();
-  if (s.includes("ENDED") || s.includes("COMPLETED") || s.includes("FINISHED")) return true;
-
-  if (lowered.includes("end-of-call-report")) return true;
-  if (lowered.includes("endedreason")) return true;
-
-  return false;
+function alreadyHasOpenAI(job: any): boolean {
+  const blob = `${job?.analysisJson ?? ""} ${job?.outcome ?? ""}`;
+  return blob.includes('"type":"analysis_v1"') || blob.includes('"type": "analysis_v1"');
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -272,6 +228,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const { shop, callJobId, checkoutId, providerCallId } = pickMetadata(body);
 
+  // Identify job (strong match -> weak match)
   const job =
     (shop && callJobId
       ? await db.callJob.findFirst({ where: { shop, id: callJobId } })
@@ -288,6 +245,40 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (!job) return new Response("OK", { status: 200 });
 
+  const callStatus =
+    asStr(body?.call?.status) ||
+    asStr(body?.status) ||
+    asStr(body?.message?.status) ||
+    null;
+
+  // ---------- PHASE 1: FAST LIVE STATUS UPDATE ----------
+  // Αν δεν είναι ended event, κάνε μόνο γρήγορο update σε CALLING/FAILED και φύγε.
+  // Αυτό σταματάει το spam (scheduler βλέπει CALLING άμεσα) και δίνει live UI update.
+  if (!isEndedStatus(callStatus)) {
+    const fast: any = {
+      provider: job.provider ?? "vapi",
+      providerCallId: providerCallId ?? job.providerCallId ?? null,
+    };
+
+    if (isFailedStatus(callStatus)) fast.status = "FAILED";
+    else if (isCallingStatus(callStatus)) fast.status = "CALLING";
+    else if (callStatus) {
+      // unknown status => μην κάνεις downgrade
+      // αφήνεις το status ως έχει
+    }
+
+    // Μην overwrite ολοκληρωμένα jobs με CALLING
+    if (job.status === "COMPLETED") delete fast.status;
+
+    await db.callJob.update({
+      where: { id: job.id },
+      data: fast,
+    });
+
+    return new Response("OK", { status: 200 });
+  }
+
+  // ---------- PHASE 2: END-OF-CALL PROCESSING ----------
   const endedReason =
     asStr(body?.call?.endedReason) ||
     asStr(body?.endedReason) ||
@@ -315,15 +306,10 @@ export async function action({ request }: ActionFunctionArgs) {
     body?.structuredOutputs?.checkout_call_outcome ??
     null;
 
-  const callStatus =
-    asStr(body?.call?.status) ||
-    asStr(body?.status) ||
-    asStr(body?.message?.status) ||
-    null;
-
   const patch: any = {
     provider: job.provider ?? "vapi",
     providerCallId: providerCallId ?? job.providerCallId ?? null,
+    status: "COMPLETED",
   };
 
   if (endedReason) patch.endedReason = endedReason;
@@ -336,38 +322,28 @@ export async function action({ request }: ActionFunctionArgs) {
     patch.transcript = merged.slice(0, 20000);
   }
 
-  if (callStatus) {
-    const s = callStatus.toUpperCase();
-    if (s.includes("ENDED") || s.includes("COMPLETED") || s.includes("FINISHED")) {
-      patch.status = "COMPLETED";
-    } else if (s.includes("FAILED")) {
-      patch.status = "FAILED";
-    } else if (s.includes("IN_PROGRESS") || s.includes("CALLING") || s.includes("CONNECTED")) {
-      patch.status = "CALLING";
-    }
-  }
-
   if (structured && typeof structured === "object") {
     const norm = normalizeOutcomeFromStructured(structured);
-
     patch.sentiment = norm.sentiment ?? undefined;
     patch.tagsCsv = norm.tagsCsv ?? undefined;
     patch.reason = norm.reason ?? undefined;
     patch.nextAction = norm.nextAction ?? undefined;
     patch.followUp = norm.followUp ?? undefined;
-
     patch.outcome = safeJson(norm.outcomeJson, 2000) ?? patch.outcome;
     patch.analysisJson = safeJson(norm.outcomeJson, 9000) ?? undefined;
   }
 
-  const rawCallAnalysis = body?.call?.analysis ?? body?.analysis ?? body?.call?.callAnalysis ?? null;
+  const rawCallAnalysis =
+    body?.call?.analysis ?? body?.analysis ?? body?.call?.callAnalysis ?? null;
   if (!structured && rawCallAnalysis) {
     patch.analysisJson = patch.analysisJson ?? safeJson(rawCallAnalysis, 9000) ?? undefined;
   }
 
-  const endEvent = isEndEvent(body);
-  if (endEvent && !structured) {
-    const transcript = extractTranscript(body) ?? (patch.transcript ? String(patch.transcript) : null);
+  // OpenAI post-processing μόνο στο END και μόνο αν δεν έχει structured output
+  // και μόνο αν δεν υπάρχει ήδη analysis_v1.
+  if (!structured && !alreadyHasOpenAI(job)) {
+    const transcript =
+      (asStr(patch.transcript) || (job.transcript ? String(job.transcript) : "")).trim();
 
     if (transcript) {
       const checkout = await db.checkout
@@ -375,7 +351,7 @@ export async function action({ request }: ActionFunctionArgs) {
         .catch(() => null);
 
       const analysis = await analyzeWithOpenAI({
-        transcript,
+        transcript: transcript.slice(0, 12000),
         customerName: checkout?.customerName ?? null,
         checkoutId: job.checkoutId,
         shop: job.shop,
@@ -387,21 +363,8 @@ export async function action({ request }: ActionFunctionArgs) {
           at: new Date().toISOString(),
           analysis,
         };
-
-        patch.status = "COMPLETED";
         patch.outcome = safeJson(packed, 2000) ?? patch.outcome;
         patch.analysisJson = safeJson(packed, 9000) ?? patch.analysisJson;
-      } else if (!patch.outcome) {
-        patch.status = "COMPLETED";
-        patch.outcome = safeJson(
-          {
-            type: "analysis_fallback_v1",
-            at: new Date().toISOString(),
-            short_summary: endedReason ?? asStr(body?.summary) ?? "Call ended.",
-            transcript: transcript.slice(0, 1400),
-          },
-          2000,
-        );
       }
     }
   }
