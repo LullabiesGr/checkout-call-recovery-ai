@@ -16,6 +16,9 @@ import {
   syncAbandonedCheckoutsFromShopify,
 } from "../callRecovery.server";
 import { createVapiCallForJob } from "../callProvider.server";
+import { useEffect } from "react";
+import { useSubmit } from "react-router";
+
 
 type LoaderData = {
   shop: string;
@@ -362,11 +365,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const locked = await db.callJob.updateMany({
         where: { id: job.id, shop, status: "QUEUED" },
         data: {
-          status: "CALLING",
-          attempts: { increment: 1 },
-          provider: vapiOk ? "vapi" : "sim",
-          outcome: null,
-        } as any,
+  status: "CALLING",
+  // attempts increment ΜΟΝΟ στο callProvider (hard lock)
+  provider: vapiOk ? "vapi" : "sim",
+  outcome: null,
+}
+ as any,
       });
 
       if (locked.count === 0) continue;
@@ -456,6 +460,22 @@ export default function Dashboard() {
       currency,
       maximumFractionDigits: 2,
     }).format(n);
+
+const submit = useSubmit();
+
+useEffect(() => {
+  const hasCalling = recentJobs.some((j) => j.status === "CALLING");
+  if (!hasCalling) return;
+
+  const id = setInterval(() => {
+    const fd = new FormData();
+    fd.set("intent", "refresh");
+    submit(fd, { method: "post" });
+  }, 5000);
+
+  return () => clearInterval(id);
+}, [recentJobs, submit]);
+
 
   // UI controls (client-side)
   const [q, setQ] = useState("");

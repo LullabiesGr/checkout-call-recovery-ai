@@ -15,7 +15,12 @@ function parseHHMM(hhmm: string): number | null {
   return hh * 60 + mm;
 }
 
-function nextTimeWithinWindow(now: Date, startHHMM: string, endHHMM: string, leadMinutes: number) {
+function nextTimeWithinWindow(
+  now: Date,
+  startHHMM: string,
+  endHHMM: string,
+  leadMinutes: number
+) {
   const start = parseHHMM(startHHMM) ?? 9 * 60;
   const end = parseHHMM(endHHMM) ?? 19 * 60;
 
@@ -33,9 +38,8 @@ function nextTimeWithinWindow(now: Date, startHHMM: string, endHHMM: string, lea
   next.setSeconds(0, 0);
   next.setHours(Math.floor(windowStart / 60), windowStart % 60, 0, 0);
 
-    if (minsNow > windowEnd) next.setDate(next.getDate() + 1);
+  if (minsNow > windowEnd) next.setDate(next.getDate() + 1);
   else if (minsNow > windowStart) next.setDate(next.getDate() + 1);
-
 
   return next;
 }
@@ -93,8 +97,12 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
       const checkoutId = String(n?.id ?? "").trim();
       if (!checkoutId) continue;
 
-      const firstName = String(n?.shippingAddress?.firstName ?? n?.customer?.firstName ?? "").trim();
-      const lastName = String(n?.shippingAddress?.lastName ?? n?.customer?.lastName ?? "").trim();
+      const firstName = String(
+        n?.shippingAddress?.firstName ?? n?.customer?.firstName ?? ""
+      ).trim();
+      const lastName = String(
+        n?.shippingAddress?.lastName ?? n?.customer?.lastName ?? ""
+      ).trim();
       const customerName = `${firstName} ${lastName}`.trim() || null;
 
       const items = (n?.lineItems?.edges ?? [])
@@ -175,7 +183,6 @@ export async function ensureSettings(shop: string) {
   );
 }
 
-
 export async function markAbandonedByDelay(shop: string, delayMinutes: number) {
   const cutoff = new Date(Date.now() - delayMinutes * 60 * 1000);
 
@@ -183,7 +190,7 @@ export async function markAbandonedByDelay(shop: string, delayMinutes: number) {
     where: {
       shop,
       status: "OPEN",
-      createdAt: { lte: cutoff }, // important: createdAt, not updatedAt
+      createdAt: { lte: cutoff },
     },
     data: {
       status: "ABANDONED",
@@ -200,8 +207,7 @@ export async function enqueueCallJobs(params: {
   callWindowEnd: string;
   delayMinutes: number;
 }) {
-
-  const { shop, enabled, minOrderValue, callWindowStart, callWindowEnd } = params;
+  const { shop, enabled, minOrderValue, callWindowStart, callWindowEnd, delayMinutes } = params;
   if (!enabled) return { enqueued: 0 };
 
   const candidates = await db.checkout.findMany({
@@ -217,23 +223,29 @@ export async function enqueueCallJobs(params: {
 
   let enqueued = 0;
 
+  // anti-spam: μην ξαναδημιουργείς νέο CallJob για ίδιο checkout αν έχει υπάρξει job πρόσφατα
+  const cooldownMs = 12 * 60 * 60 * 1000; // 12h
+  const cutoff = new Date(Date.now() - cooldownMs);
+
   for (const c of candidates) {
     const phone = String(c.phone || "").trim();
     if (!phone) continue;
 
-    const exists = await db.callJob.findFirst({
+    const anyRecentJob = await db.callJob.findFirst({
       where: {
         shop,
         checkoutId: c.checkoutId,
-        status: { in: ["QUEUED", "CALLING"] },
+        createdAt: { gte: cutoff },
+        status: { notIn: ["CANCELED"] },
       },
-      select: { id: true },
+      select: { id: true, status: true, attempts: true },
     });
-    if (exists) continue;
 
-    const lead = Math.max(0, Number(params.delayMinutes ?? 0));
+    // αν υπάρχει πρόσφατο job (ό,τι status κι αν έχει), δεν δημιουργείς δεύτερο
+    if (anyRecentJob) continue;
+
+    const lead = Math.max(0, Number(delayMinutes ?? 0));
     const scheduledFor = nextTimeWithinWindow(new Date(), callWindowStart, callWindowEnd, lead);
-
 
     await db.callJob.create({
       data: {

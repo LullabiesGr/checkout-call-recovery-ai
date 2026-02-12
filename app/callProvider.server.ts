@@ -39,10 +39,7 @@ function buildSystemPrompt(args: {
     items.length === 0
       ? "No cart items available."
       : items
-          .map(
-            (it: any) =>
-              `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`
-          )
+          .map((it: any) => `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`)
           .join("\n");
 
   const base = `
@@ -52,7 +49,7 @@ Rules:
 - Never be pushy. Confirm identity. Ask if it's a good time.
 - Use the cart context and total value.
 - If the customer objects, handle objections and offer help.
-- If they want to buy: guide them to complete checkout (send link if available, or instruct steps).
+- If they want to buy: guide them to complete checkout.
 - If they do not want to continue: end politely and mark as not interested.
 - Keep calls short.
 
@@ -82,6 +79,11 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     where: { id: params.callJobId, shop: params.shop },
   });
   if (!job) throw new Error("CallJob not found");
+
+  // ήδη έχει δημιουργηθεί call => μην ξαναδημιουργείς
+  if (job.providerCallId) {
+    return { ok: true, providerCallId: job.providerCallId, alreadyCreated: true };
+  }
 
   const checkout = await db.checkout.findFirst({
     where: { shop: params.shop, checkoutId: job.checkoutId },
@@ -118,16 +120,26 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     throw new Error("Missing phone number on CallJob/Checkout");
   }
 
-  // lock job -> CALLING
-  await db.callJob.update({
-    where: { id: job.id },
+  // HARD LOCK: αν κάποιος άλλος το πήρε ήδη, stop
+  const locked = await db.callJob.updateMany({
+    where: {
+      id: job.id,
+      shop: params.shop,
+      providerCallId: null,
+      status: { in: ["QUEUED", "CALLING"] },
+    },
     data: {
       status: "CALLING",
       provider: "vapi",
       attempts: { increment: 1 },
       outcome: null,
-    },
+    } as any,
   });
+
+  if (locked.count === 0) {
+    const fresh = await db.callJob.findFirst({ where: { id: job.id, shop: params.shop } });
+    return { ok: true, providerCallId: fresh?.providerCallId ?? null, skipped: true };
+  }
 
   const callMetadata = {
     shop: params.shop,
@@ -151,7 +163,6 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
         name: checkout.customerName ?? undefined,
       },
 
-      // per-call override
       assistant: {
         model: {
           provider: "openai",
@@ -167,9 +178,7 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
         },
 
         serverUrl: webhookUrl,
-        // κρατάς σκέτα event names (όχι selectors)
         serverMessages: ["status-update", "end-of-call-report", "transcript"],
-
         metadata: callMetadata,
       },
 
