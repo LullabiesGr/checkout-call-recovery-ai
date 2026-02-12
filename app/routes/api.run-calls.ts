@@ -6,6 +6,7 @@ import { startVapiCallForJob } from "../callProvider.server";
 
 // POST /api/run-calls
 export async function action({ request }: ActionFunctionArgs) {
+  // simple auth gate: require a shared secret header (set in ENV)
   const want = process.env.RUN_CALLS_SECRET || "";
   if (want) {
     const got = request.headers.get("x-run-calls-secret") || "";
@@ -25,20 +26,19 @@ export async function action({ request }: ActionFunctionArgs) {
   });
 
   let processed = 0;
-  let started = 0;
+  let completed = 0;
   let failed = 0;
-  let skipped = 0;
 
   for (const job of jobs) {
-    // light lock: μην κάνεις attempts++ εδώ
+    // lock (prevent double-processing)
     const locked = await db.callJob.updateMany({
-      where: { id: job.id, status: "QUEUED", providerCallId: null },
-      data: ({ status: "CALLING", outcome: null } as any),
+      where: { id: job.id, status: "QUEUED" },
+      data: {
+        status: "CALLING",
+        attempts: { increment: 1 },
+      },
     });
-    if (locked.count === 0) {
-      skipped += 1;
-      continue;
-    }
+    if (locked.count === 0) continue;
 
     processed += 1;
 
@@ -52,32 +52,30 @@ export async function action({ request }: ActionFunctionArgs) {
 
       await db.callJob.update({
         where: { id: job.id },
-        data: ({
+        data: {
+          status: "COMPLETED",
           provider: "vapi",
           providerCallId: res.providerCallId ?? null,
           outcome: "VAPI_CALL_STARTED",
-          // status μένει CALLING — θα το γυρίσει το webhook σε COMPLETED/FAILED
-        } as any),
+        },
       });
 
-      started += 1;
+      completed += 1;
     } catch (e: any) {
-      // διάβασε πραγματικό attempts μετά το hard-lock increment
-      const fresh = await db.callJob.findFirst({ where: { id: job.id } });
-      const attemptsAfter = Number((fresh as any)?.attempts ?? (job as any)?.attempts ?? 0);
-      const maxAttempts = Number((settings as any)?.maxAttempts ?? 2);
+      const attemptsAfter = (job.attempts ?? 0) + 1;
+      const maxAttempts = settings.maxAttempts ?? 2;
 
       if (attemptsAfter >= maxAttempts) {
         await db.callJob.update({
           where: { id: job.id },
           data: {
             status: "FAILED",
-            outcome: `ERROR: ${String(e?.message ?? e)}`.slice(0, 2000),
+            outcome: `ERROR: ${String(e?.message ?? e)}`,
           },
         });
         failed += 1;
       } else {
-        const retryMinutes = Number((settings as any)?.retryMinutes ?? 180);
+        const retryMinutes = settings.retryMinutes ?? 180;
         const next = new Date(Date.now() + retryMinutes * 60 * 1000);
 
         await db.callJob.update({
@@ -93,7 +91,7 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   return new Response(
-    JSON.stringify({ ok: true, processed, started, failed, skipped }),
+    JSON.stringify({ ok: true, processed, completed, failed }),
     { status: 200, headers: { "Content-Type": "application/json" } }
   );
 }

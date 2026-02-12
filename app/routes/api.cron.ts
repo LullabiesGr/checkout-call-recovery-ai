@@ -1,99 +1,52 @@
-// app/routes/api.run-calls.ts
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
-import { ensureSettings } from "../callRecovery.server";
-import { startVapiCallForJob } from "../callProvider.server";
+import { ensureSettings, markAbandonedByDelay, enqueueCallJobs } from "../callRecovery.server";
 
-// POST /api/run-calls
 export async function action({ request }: ActionFunctionArgs) {
-  const want = process.env.RUN_CALLS_SECRET || "";
+  const want = process.env.CRON_TOKEN || "";
   if (want) {
-    const got = request.headers.get("x-run-calls-secret") || "";
+    const got = request.headers.get("x-cron-token") || "";
     if (got !== want) return new Response("Unauthorized", { status: 401 });
   }
 
-  const now = new Date();
+  // shops = όλα τα εγκατεστημένα (Settings rows)
+  const shops = (await db.settings.findMany({ select: { shop: true } })).map(x => x.shop);
 
-  // pull due jobs
-  const jobs = await db.callJob.findMany({
-    where: {
-      status: "QUEUED",
-      scheduledFor: { lte: now },
-    },
-    orderBy: { scheduledFor: "asc" },
-    take: 25,
-  });
+  let markedTotal = 0;
+  let enqueuedTotal = 0;
 
-  let processed = 0;
-  let started = 0;
-  let failed = 0;
-  let skipped = 0;
+  for (const shop of shops) {
+    const settings = await ensureSettings(shop);
 
-  for (const job of jobs) {
-    // light lock: μην κάνεις attempts++ εδώ
-    const locked = await db.callJob.updateMany({
-      where: { id: job.id, status: "QUEUED", providerCallId: null },
-      data: ({ status: "CALLING", outcome: null } as any),
+    const marked = await markAbandonedByDelay(shop, settings.delayMinutes);
+    markedTotal += marked.count ?? 0;
+
+    const enq = await enqueueCallJobs({
+      shop,
+      enabled: settings.enabled,
+      minOrderValue: settings.minOrderValue,
+      callWindowStart: (settings as any).callWindowStart ?? "09:00",
+      callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
     });
-    if (locked.count === 0) {
-      skipped += 1;
-      continue;
-    }
 
-    processed += 1;
-
-    const settings = await ensureSettings(job.shop);
-
-    try {
-      const res = await startVapiCallForJob({
-        shop: job.shop,
-        callJobId: job.id,
-      });
-
-      await db.callJob.update({
-        where: { id: job.id },
-        data: ({
-          provider: "vapi",
-          providerCallId: res.providerCallId ?? null,
-          outcome: "VAPI_CALL_STARTED",
-          // status μένει CALLING — θα το γυρίσει το webhook σε COMPLETED/FAILED
-        } as any),
-      });
-
-      started += 1;
-    } catch (e: any) {
-      // διάβασε πραγματικό attempts μετά το hard-lock increment
-      const fresh = await db.callJob.findFirst({ where: { id: job.id } });
-      const attemptsAfter = Number((fresh as any)?.attempts ?? (job as any)?.attempts ?? 0);
-      const maxAttempts = Number((settings as any)?.maxAttempts ?? 2);
-
-      if (attemptsAfter >= maxAttempts) {
-        await db.callJob.update({
-          where: { id: job.id },
-          data: {
-            status: "FAILED",
-            outcome: `ERROR: ${String(e?.message ?? e)}`.slice(0, 2000),
-          },
-        });
-        failed += 1;
-      } else {
-        const retryMinutes = Number((settings as any)?.retryMinutes ?? 180);
-        const next = new Date(Date.now() + retryMinutes * 60 * 1000);
-
-        await db.callJob.update({
-          where: { id: job.id },
-          data: {
-            status: "QUEUED",
-            scheduledFor: next,
-            outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
-          },
-        });
-      }
-    }
+    enqueuedTotal += enq.enqueued ?? 0;
   }
 
-  return new Response(
-    JSON.stringify({ ok: true, processed, started, failed, skipped }),
-    { status: 200, headers: { "Content-Type": "application/json" } }
-  );
+  // Τρέξε calls με το υπάρχον endpoint σου (/api/run-calls)
+  const appUrl = (process.env.APP_URL || "").replace(/\/$/, "");
+  if (appUrl) {
+    await fetch(`${appUrl}/api/run-calls`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-run-calls-secret": process.env.RUN_CALLS_SECRET || "",
+      },
+      body: JSON.stringify({}),
+    }).catch(() => null);
+  }
+
+  return new Response(JSON.stringify({ ok: true, shops: shops.length, markedTotal, enqueuedTotal }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }

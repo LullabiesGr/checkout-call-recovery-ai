@@ -28,6 +28,8 @@ export async function action({ request }: ActionFunctionArgs) {
     eventType ??
     "VAPI_EVENT";
 
+  // Map statuses
+  // Keep simple: when end-of-call-report arrives => COMPLETED unless explicitly failed
   let newStatus: "CALLING" | "COMPLETED" | "FAILED" | null = null;
 
   const lowered = JSON.stringify(payload).toLowerCase();
