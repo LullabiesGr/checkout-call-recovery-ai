@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -24,6 +25,11 @@ model Checkout {
   raw          String?
   customerName String?
   itemsJson    String?
+
+  // ✅ recovered attribution (order after call)
+  recoveredAt      DateTime?
+  recoveredOrderId String?
+  recoveredAmount  Float?
 
   @@unique([shop, checkoutId], name: "shop_checkoutId")
   @@index([shop, status, createdAt])
@@ -67,6 +73,11 @@ model CallJob {
   nextAction     String?
   followUp       String?
   analysisJson   String?
+
+  // ✅ earned attribution per call job
+  attributedAt      DateTime?
+  attributedOrderId String?
+  attributedAmount  Float?
 
   @@index([shop, status, scheduledFor])
   @@index([shop, checkoutId])

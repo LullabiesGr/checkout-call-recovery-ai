@@ -25,7 +25,11 @@ type LoaderData = {
     potentialRevenue7d: number;
     queuedCalls: number;
     completedCalls7d: number;
+
+    recoveredCount7d: number;
+    recoveredRevenue7d: number;
   };
+
   recentJobs: Array<{
     id: string;
     checkoutId: string;
@@ -35,11 +39,16 @@ type LoaderData = {
     createdAt: string;
     outcome?: string | null;
 
+    // ✅ attribution (earned)
+    attributedAt?: string | null;
+    attributedOrderId?: string | null;
+    attributedAmount?: number | null;
+
     // joined
     customerName?: string | null;
     cartPreview?: string | null;
 
-    // analysis extracted from outcome-json (no DB migration needed)
+    // analysis extracted from outcome-json
     sentiment?: string | null;
     tagsCsv?: string | null;
     reason?: string | null;
@@ -124,7 +133,9 @@ function parseOutcomeJson(outcome?: string | null): OutcomeAnalysis {
     if (!obj || typeof obj !== "object") return {};
 
     const tagsArr = Array.isArray((obj as any).tags)
-      ? (obj as any).tags.map((x: any) => String(x ?? "").trim()).filter(Boolean)
+      ? (obj as any).tags
+          .map((x: any) => String(x ?? "").trim())
+          .filter(Boolean)
       : null;
 
     return {
@@ -158,6 +169,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     minOrderValue: settings.minOrderValue,
     callWindowStart: (settings as any).callWindowStart ?? "09:00",
     callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
+    delayMinutes: settings.delayMinutes, // ✅ missing before
   });
 
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -167,6 +179,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     potentialAgg,
     queuedCalls,
     completedCalls7d,
+    recoveredAgg,
+    recoveredCount7d,
     recentJobs,
   ] = await Promise.all([
     db.checkout.count({
@@ -180,6 +194,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     db.callJob.count({
       where: { shop, status: "COMPLETED", createdAt: { gte: since } },
     }),
+
+    // ✅ recovered revenue attributed to calls (last 7d)
+    db.callJob.aggregate({
+      where: { shop, attributedAt: { gte: since } },
+      _sum: { attributedAmount: true },
+    }),
+    db.callJob.count({
+      where: { shop, attributedAt: { gte: since } },
+    }),
+
     db.callJob.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
@@ -192,6 +216,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         attempts: true,
         createdAt: true,
         outcome: true,
+
+        // ✅ attribution fields
+        attributedAt: true,
+        attributedOrderId: true,
+        attributedAmount: true,
       },
     }),
   ]);
@@ -208,6 +237,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const cMap = new Map(related.map((c) => [c.checkoutId, c]));
   const potentialRevenue7d = Number(potentialAgg._sum.value ?? 0);
+  const recoveredRevenue7d = Number(recoveredAgg._sum.attributedAmount ?? 0);
 
   return {
     shop,
@@ -218,11 +248,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       potentialRevenue7d,
       queuedCalls,
       completedCalls7d,
+
+      recoveredCount7d,
+      recoveredRevenue7d,
     },
     recentJobs: recentJobs.map((j) => {
       const c = cMap.get(j.checkoutId);
       const a = parseOutcomeJson(j.outcome ?? null);
-      const tagsCsv = a.tags && a.tags.length ? a.tags.slice(0, 10).join(", ") : null;
+      const tagsCsv =
+        a.tags && a.tags.length ? a.tags.slice(0, 10).join(", ") : null;
 
       return {
         ...j,
@@ -230,6 +264,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         createdAt: j.createdAt.toISOString(),
         customerName: c?.customerName ?? null,
         cartPreview: buildCartPreview(c?.itemsJson ?? null),
+
+        // ✅ attribution in UI
+        attributedAt: j.attributedAt ? j.attributedAt.toISOString() : null,
+        attributedOrderId: j.attributedOrderId ?? null,
+        attributedAmount: j.attributedAmount ?? null,
 
         sentiment: a.sentiment ?? null,
         tagsCsv,
@@ -254,10 +293,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const redirectBack = () =>
     new Response(null, { status: 303, headers: { Location: "/app" } });
 
-  // Refresh-only
   if (intent === "refresh") return redirectBack();
 
-  // Run queued jobs
   if (intent === "run_jobs") {
     const settings = await ensureSettings(shop);
     const vapiOk = isVapiConfiguredFromEnv();
@@ -326,7 +363,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return redirectBack();
   }
 
-  // Manual call
   if (intent === "manual_call") {
     const callJobId = String(fd.get("callJobId") ?? "").trim();
     if (!callJobId) return redirectBack();
@@ -396,7 +432,7 @@ export default function Dashboard() {
         </s-stack>
 
         <s-section heading="7-day snapshot">
-          <s-inline-grid columns={{ xs: 1, sm: 2, md: 4 }} gap="base">
+          <s-inline-grid columns={{ xs: 1, sm: 2, md: 5 }} gap="base">
             <s-card padding="base">
               <s-stack gap="tight">
                 <s-text as="h3" variant="headingSm">
@@ -449,6 +485,20 @@ export default function Dashboard() {
                 </s-text>
                 <s-text as="p" variant="bodySm" tone="subdued">
                   Last 7 days (DB)
+                </s-text>
+              </s-stack>
+            </s-card>
+
+            <s-card padding="base">
+              <s-stack gap="tight">
+                <s-text as="h3" variant="headingSm">
+                  Recovered revenue
+                </s-text>
+                <s-text as="p" variant="headingLg">
+                  {money(stats.recoveredRevenue7d)}
+                </s-text>
+                <s-text as="p" variant="bodySm" tone="subdued">
+                  Attributed to calls (7d) · {stats.recoveredCount7d} orders
                 </s-text>
               </s-stack>
             </s-card>
@@ -507,6 +557,7 @@ export default function Dashboard() {
                       <th style={{ padding: "0 10px" }}>Result</th>
                       <th style={{ padding: "0 10px" }}>Tags</th>
                       <th style={{ padding: "0 10px" }}>Next action</th>
+                      <th style={{ padding: "0 10px" }}>Earned</th>
                       <th style={{ padding: "0 10px" }}>Manual</th>
                     </tr>
                   </thead>
@@ -534,24 +585,18 @@ export default function Dashboard() {
                             }}
                           >
                             {j.checkoutId}
-                            <div
-                              style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}
-                            >
+                            <div style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}>
                               {j.outcome ?? "-"}
                             </div>
 
-                            {j.reason ||
-                            j.transcript ||
-                            j.endedReason ||
-                            j.recordingUrl ? (
+                            {j.reason || j.transcript || j.endedReason || j.recordingUrl ? (
                               <div style={{ marginTop: 10 }}>
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    const el =
-                                      document.getElementById(
-                                        detailsId
-                                      ) as HTMLDetailsElement | null;
+                                    const el = document.getElementById(
+                                      detailsId
+                                    ) as HTMLDetailsElement | null;
                                     if (el) el.open = !el.open;
                                   }}
                                   style={{
@@ -569,18 +614,10 @@ export default function Dashboard() {
                             ) : null}
 
                             <details id={detailsId} style={{ marginTop: 10 }}>
-                              <summary
-                                style={{
-                                  cursor: "pointer",
-                                  fontSize: 12,
-                                  opacity: 0.7,
-                                }}
-                              >
+                              <summary style={{ cursor: "pointer", fontSize: 12, opacity: 0.7 }}>
                                 Expand
                               </summary>
-                              <div
-                                style={{ paddingTop: 10, fontSize: 13, lineHeight: 1.4 }}
-                              >
+                              <div style={{ paddingTop: 10, fontSize: 13, lineHeight: 1.4 }}>
                                 {j.endedReason ? (
                                   <div style={{ marginBottom: 8 }}>
                                     <strong>Ended:</strong> {j.endedReason}
@@ -602,11 +639,7 @@ export default function Dashboard() {
                                 {j.recordingUrl ? (
                                   <div style={{ marginBottom: 8 }}>
                                     <strong>Recording:</strong>{" "}
-                                    <a
-                                      href={j.recordingUrl}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                    >
+                                    <a href={j.recordingUrl} target="_blank" rel="noreferrer">
                                       Open
                                     </a>
                                   </div>
@@ -649,9 +682,7 @@ export default function Dashboard() {
 
                           <td style={{ padding: "12px 10px", verticalAlign: "top" }}>
                             <s-badge>{j.status}</s-badge>
-                            <div
-                              style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}
-                            >
+                            <div style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}>
                               attempts: {j.attempts}
                             </div>
                           </td>
@@ -712,14 +743,30 @@ export default function Dashboard() {
                               <div>
                                 <div style={{ fontWeight: 700 }}>{j.nextAction}</div>
                                 {j.followUp ? (
-                                  <div
-                                    style={{
-                                      marginTop: 6,
-                                      fontSize: 12,
-                                      opacity: 0.75,
-                                    }}
-                                  >
+                                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
                                     {j.followUp}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <span style={{ opacity: 0.6 }}>-</span>
+                            )}
+                          </td>
+
+                          <td
+                            style={{
+                              padding: "12px 10px",
+                              verticalAlign: "top",
+                              whiteSpace: "nowrap",
+                              minWidth: 140,
+                            }}
+                          >
+                            {j.attributedAmount != null ? (
+                              <div>
+                                <div style={{ fontWeight: 800 }}>{money(j.attributedAmount)}</div>
+                                {j.attributedOrderId ? (
+                                  <div style={{ fontSize: 12, opacity: 0.7 }}>
+                                    Order: {j.attributedOrderId}
                                   </div>
                                 ) : null}
                               </div>

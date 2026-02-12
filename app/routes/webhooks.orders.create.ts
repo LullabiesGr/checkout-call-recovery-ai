@@ -54,9 +54,10 @@ export async function action({ request }: ActionFunctionArgs) {
     },
   });
 
-  // Attribution:
+    // Attribution:
   // If order maps to a checkout we know, mark RECOVERED and store recovered amount.
   if (checkoutId) {
+    // 1) Update checkout (global truth)
     await db.checkout.updateMany({
       where: { shop, checkoutId },
       data: {
@@ -68,12 +69,35 @@ export async function action({ request }: ActionFunctionArgs) {
       },
     });
 
-    // Cancel queued/calling jobs for that checkout
+    // 2) Attribute revenue to the most recent Vapi call job for this checkout
+    const lastJob = await db.callJob.findFirst({
+      where: {
+        shop,
+        checkoutId,
+        provider: "vapi",
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true },
+    });
+
+    if (lastJob) {
+      await db.callJob.update({
+        where: { id: lastJob.id },
+        data: {
+          attributedAt: new Date(),
+          attributedOrderId: orderId,
+          attributedAmount: total ?? undefined,
+        },
+      });
+    }
+
+    // 3) Cancel queued/calling jobs for that checkout
     await db.callJob.updateMany({
       where: { shop, checkoutId, status: { in: ["QUEUED", "CALLING"] } },
       data: { status: "CANCELED", outcome: "ORDER_PLACED" },
     });
   }
+
 
   return new Response("OK", { status: 200 });
 }
