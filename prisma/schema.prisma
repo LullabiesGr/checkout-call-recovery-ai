@@ -1,5 +1,3 @@
-// prisma/schema.prisma
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,21 +6,6 @@ datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
-}
-
-enum CheckoutStatus {
-  OPEN
-  ABANDONED
-  CONVERTED
-  RECOVERED
-}
-
-enum CallJobStatus {
-  QUEUED
-  CALLING
-  COMPLETED
-  FAILED
-  CANCELED
 }
 
 model Checkout {
@@ -39,8 +22,6 @@ model Checkout {
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
   raw          String?
-
-  // extra context for UI/calls
   customerName String?
   itemsJson    String?
 
@@ -77,58 +58,72 @@ model CallJob {
   outcome        String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+  endedReason    String?
+  transcript     String?
+  recordingUrl   String?
+  sentiment      String?
+  tagsCsv        String?
+  reason         String?
+  nextAction     String?
+  followUp       String?
+  analysisJson   String?
 
   @@index([shop, status, scheduledFor])
   @@index([shop, checkoutId])
 }
 
 model Settings {
-  id            String   @id @default(cuid())
-  shop          String   @unique
-  enabled       Boolean  @default(true)
-  delayMinutes  Int      @default(30)
-  maxAttempts   Int      @default(2)
-  retryMinutes  Int      @default(180)
-  minOrderValue Float    @default(0)
-  currency      String   @default("USD")
-
-  callWindowStart String @default("09:00")
-  callWindowEnd   String @default("19:00")
-
-  // Vapi config (optional)
+  id                String   @id @default(cuid())
+  shop              String   @unique
+  enabled           Boolean  @default(true)
+  delayMinutes      Int      @default(30)
+  maxAttempts       Int      @default(2)
+  retryMinutes      Int      @default(180)
+  minOrderValue     Float    @default(0)
+  currency          String   @default("USD")
+  callWindowStart   String   @default("09:00")
+  callWindowEnd     String   @default("19:00")
+  merchantPrompt    String?  @default("")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
   vapiAssistantId   String?
   vapiPhoneNumberId String?
-
-  // Prompts
-  userPrompt     String  @default("")
-  merchantPrompt String? @default("")
-
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  userPrompt        String   @default("")
 }
 
 model Session {
-  id            String   @id
-  shop          String
-  state         String
-  isOnline      Boolean  @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-
-  // αυτά τα πεδία τα θέλουν πολλές εκδόσεις του storage adapter
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean  @default(false)
-  locale        String?
-  collaborator  Boolean? @default(false)
-  emailVerified Boolean? @default(false)
-
-  // ΒΑΛ’ ΤΑ ΠΙΣΩ για να μην σκάει σε διαφορετικές εκδόσεις
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
 
   @@index([shop])
+}
+
+enum CheckoutStatus {
+  OPEN
+  ABANDONED
+  CONVERTED
+  RECOVERED
+}
+
+enum CallJobStatus {
+  QUEUED
+  CALLING
+  COMPLETED
+  FAILED
+  CANCELED
 }
