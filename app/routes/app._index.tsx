@@ -33,21 +33,25 @@ type LoaderData = {
     attempts: number;
     createdAt: string;
 
-    // legacy
-    outcome?: string | null;
+    customerName?: string | null;
+    cartPreview?: string | null;
 
-    // enriched UI fields
-    endedReason?: string | null;
+    // provider + details
+    providerCallId?: string | null;
     recordingUrl?: string | null;
+    endedReason?: string | null;
+    transcript?: string | null;
+
+    // structured analysis (preferred)
     sentiment?: string | null;
     tagsCsv?: string | null;
     reason?: string | null;
     nextAction?: string | null;
     followUp?: string | null;
-    transcript?: string | null;
+    analysisJson?: string | null;
 
-    customerName?: string | null;
-    cartPreview?: string | null;
+    // legacy
+    outcome?: string | null;
   }>;
 };
 
@@ -100,47 +104,23 @@ function formatWhen(iso: string) {
   return d.toLocaleString();
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const s = String(status || "").toUpperCase();
+// ---------------- UI primitives ----------------
 
-  const tone = (() => {
-    if (s === "COMPLETED") return { bg: "rgba(16,185,129,0.12)", bd: "rgba(16,185,129,0.35)", tx: "#065f46" };
-    if (s === "CALLING") return { bg: "rgba(59,130,246,0.12)", bd: "rgba(59,130,246,0.35)", tx: "#1e3a8a" };
-    if (s === "QUEUED") return { bg: "rgba(245,158,11,0.12)", bd: "rgba(245,158,11,0.35)", tx: "#92400e" };
-    if (s === "FAILED") return { bg: "rgba(239,68,68,0.12)", bd: "rgba(239,68,68,0.35)", tx: "#7f1d1d" };
-    if (s === "CANCELED") return { bg: "rgba(107,114,128,0.12)", bd: "rgba(107,114,128,0.35)", tx: "#111827" };
-    return { bg: "rgba(0,0,0,0.06)", bd: "rgba(0,0,0,0.14)", tx: "#111827" };
-  })();
-
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "4px 10px",
-        borderRadius: 999,
-        border: `1px solid ${tone.bd}`,
-        background: tone.bg,
-        color: tone.tx,
-        fontWeight: 700,
-        fontSize: 12,
-        letterSpacing: 0.2,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {s}
-    </span>
-  );
-}
-
-function SentimentPill({ sentiment }: { sentiment: "positive" | "neutral" | "negative" }) {
+function Pill(props: {
+  children: any;
+  tone?: "neutral" | "green" | "blue" | "amber" | "red";
+}) {
+  const tone = props.tone ?? "neutral";
   const t =
-    sentiment === "positive"
-      ? { bg: "rgba(16,185,129,0.10)", bd: "rgba(16,185,129,0.30)", tx: "#065f46", label: "Positive" }
-      : sentiment === "negative"
-        ? { bg: "rgba(239,68,68,0.10)", bd: "rgba(239,68,68,0.30)", tx: "#7f1d1d", label: "Negative" }
-        : { bg: "rgba(107,114,128,0.10)", bd: "rgba(107,114,128,0.30)", tx: "#111827", label: "Neutral" };
+    tone === "green"
+      ? { bg: "rgba(16,185,129,0.10)", bd: "rgba(16,185,129,0.25)", tx: "#065f46" }
+      : tone === "blue"
+        ? { bg: "rgba(59,130,246,0.10)", bd: "rgba(59,130,246,0.25)", tx: "#1e3a8a" }
+        : tone === "amber"
+          ? { bg: "rgba(245,158,11,0.10)", bd: "rgba(245,158,11,0.25)", tx: "#92400e" }
+          : tone === "red"
+            ? { bg: "rgba(239,68,68,0.10)", bd: "rgba(239,68,68,0.25)", tx: "#7f1d1d" }
+            : { bg: "rgba(0,0,0,0.04)", bd: "rgba(0,0,0,0.10)", tx: "rgba(0,0,0,0.75)" };
 
   return (
     <span
@@ -152,69 +132,52 @@ function SentimentPill({ sentiment }: { sentiment: "positive" | "neutral" | "neg
         border: `1px solid ${t.bd}`,
         background: t.bg,
         color: t.tx,
-        fontWeight: 700,
+        fontWeight: 800,
         fontSize: 12,
         whiteSpace: "nowrap",
       }}
     >
-      {t.label}
+      {props.children}
     </span>
   );
 }
 
-function TagPill({ tag }: { tag: string }) {
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        padding: "2px 8px",
-        borderRadius: 999,
-        border: "1px solid rgba(0,0,0,0.10)",
-        background: "rgba(0,0,0,0.04)",
-        fontSize: 12,
-        color: "rgba(0,0,0,0.75)",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {tag}
-    </span>
-  );
+function StatusPill({ status }: { status: string }) {
+  const s = String(status || "").toUpperCase();
+  const tone =
+    s === "COMPLETED" ? "green" :
+    s === "CALLING" ? "blue" :
+    s === "QUEUED" ? "amber" :
+    s === "FAILED" ? "red" :
+    "neutral";
+  return <Pill tone={tone as any}>{s}</Pill>;
 }
 
-function MiniLabel({ children }: { children: any }) {
-  return (
-    <div
-      style={{
-        fontSize: 12,
-        color: "rgba(0,0,0,0.55)",
-        fontWeight: 700,
-        marginBottom: 6,
-      }}
-    >
-      {children}
-    </div>
-  );
+function SentimentPill({ sentiment }: { sentiment: "positive" | "neutral" | "negative" }) {
+  const tone = sentiment === "positive" ? "green" : sentiment === "negative" ? "red" : "neutral";
+  const label = sentiment === "positive" ? "Positive" : sentiment === "negative" ? "Negative" : "Neutral";
+  return <Pill tone={tone as any}>{label}</Pill>;
 }
 
 function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "ghost" }) {
   const tone = props.tone ?? "ghost";
   const base: React.CSSProperties = {
-    padding: "6px 10px",
+    padding: "7px 10px",
     borderRadius: 10,
     border: "1px solid rgba(0,0,0,0.14)",
     background: "white",
     cursor: "pointer",
-    fontWeight: 700,
+    fontWeight: 800,
     fontSize: 12,
+    lineHeight: 1,
   };
 
   const styles =
     tone === "primary"
       ? {
           ...base,
-          border: "1px solid rgba(59,130,246,0.35)",
-          background: "rgba(59,130,246,0.10)",
+          border: "1px solid rgba(59,130,246,0.30)",
+          background: "rgba(59,130,246,0.08)",
         }
       : base;
 
@@ -222,281 +185,296 @@ function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { ton
   return <button {...rest} style={{ ...styles, ...(style ?? {}) }} />;
 }
 
-function CallOutcomeCard(props: {
-  job: LoaderData["recentJobs"][number];
-}) {
-  const j = props.job;
-
-  const sentiment = cleanSentiment(j.sentiment);
-  const tags = splitTags(j.tagsCsv);
-
-  const hasSummary =
-    Boolean(sentiment) ||
-    Boolean(j.reason) ||
-    Boolean(j.nextAction) ||
-    Boolean(j.followUp) ||
-    Boolean(j.recordingUrl) ||
-    Boolean(j.transcript) ||
-    Boolean(j.endedReason);
-
-  const copy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // ignore
-    }
-  };
-
-  // Friendly status text when not completed
-  if (String(j.status).toUpperCase() === "CALLING") {
-    return (
-      <div
-        style={{
-          border: "1px solid rgba(59,130,246,0.20)",
-          background: "rgba(59,130,246,0.06)",
-          borderRadius: 14,
-          padding: 12,
-          minWidth: 360,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-          <div style={{ fontWeight: 800, fontSize: 13 }}>Call in progress</div>
-          {j.providerCallId ? (
-            <span style={{ fontSize: 12, color: "rgba(0,0,0,0.55)", fontWeight: 700 }}>
-              Call ID: {String(j.providerCallId).slice(0, 10)}…
-            </span>
-          ) : null}
-        </div>
-        <div style={{ marginTop: 6, fontSize: 12, color: "rgba(0,0,0,0.60)" }}>
-          Waiting for the end-of-call report from Vapi.
-        </div>
-      </div>
-    );
-  }
-
-  if (String(j.status).toUpperCase() === "QUEUED") {
-    return (
-      <div
-        style={{
-          border: "1px solid rgba(245,158,11,0.22)",
-          background: "rgba(245,158,11,0.06)",
-          borderRadius: 14,
-          padding: 12,
-          minWidth: 360,
-        }}
-      >
-        <div style={{ fontWeight: 800, fontSize: 13 }}>Queued</div>
-        <div style={{ marginTop: 6, fontSize: 12, color: "rgba(0,0,0,0.60)" }}>
-          Scheduled for {formatWhen(j.scheduledFor)}.
-        </div>
-      </div>
-    );
-  }
-
-  if (String(j.status).toUpperCase() === "FAILED") {
-    return (
-      <div
-        style={{
-          border: "1px solid rgba(239,68,68,0.22)",
-          background: "rgba(239,68,68,0.06)",
-          borderRadius: 14,
-          padding: 12,
-          minWidth: 360,
-        }}
-      >
-        <div style={{ fontWeight: 800, fontSize: 13 }}>Failed</div>
-        <div style={{ marginTop: 6, fontSize: 12, color: "rgba(0,0,0,0.65)" }}>
-          {j.outcome ? String(j.outcome) : "Unknown error"}
-        </div>
-      </div>
-    );
-  }
-
-  // COMPLETED or other: show structured summary (never raw JSON)
-  if (!hasSummary) {
-    return (
-      <div
-        style={{
-          border: "1px solid rgba(0,0,0,0.10)",
-          background: "rgba(0,0,0,0.03)",
-          borderRadius: 14,
-          padding: 12,
-          minWidth: 360,
-        }}
-      >
-        <div style={{ fontWeight: 800, fontSize: 13 }}>Completed</div>
-        <div style={{ marginTop: 6, fontSize: 12, color: "rgba(0,0,0,0.60)" }}>
-          No summary available yet.
-        </div>
-      </div>
-    );
-  }
-
+function KeyValueRow(props: { label: string; value: any }) {
+  if (!props.value) return null;
   return (
-    <div
-      style={{
-        border: "1px solid rgba(0,0,0,0.10)",
-        background: "white",
-        borderRadius: 14,
-        padding: 12,
-        minWidth: 420,
-        boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 900, fontSize: 13 }}>Call summary</div>
-            {sentiment ? <SentimentPill sentiment={sentiment} /> : null}
-            {tags.length ? (
-              <span style={{ fontSize: 12, color: "rgba(0,0,0,0.55)", fontWeight: 700 }}>
-                {tags.length} tag{tags.length === 1 ? "" : "s"}
-              </span>
-            ) : null}
-          </div>
-
-          {tags.length ? (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {tags.map((t) => (
-                <TagPill key={t} tag={t} />
-              ))}
-            </div>
-          ) : null}
-        </div>
-
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {j.recordingUrl ? (
-            <a
-              href={String(j.recordingUrl)}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                textDecoration: "none",
-              }}
-            >
-              <SoftButton type="button" tone="primary">
-                Recording
-              </SoftButton>
-            </a>
-          ) : null}
-        </div>
+    <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+      <div style={{ width: 110, fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.55)" }}>
+        {props.label}
       </div>
-
-      <div style={{ marginTop: 12 }}>
-        {j.reason ? (
-          <div style={{ marginBottom: 12 }}>
-            <MiniLabel>What happened</MiniLabel>
-            <div style={{ fontSize: 13, color: "rgba(0,0,0,0.80)", lineHeight: 1.45 }}>
-              {String(j.reason)}
-            </div>
-          </div>
-        ) : null}
-
-        {j.nextAction ? (
-          <div
-            style={{
-              borderRadius: 12,
-              border: "1px solid rgba(59,130,246,0.20)",
-              background: "rgba(59,130,246,0.06)",
-              padding: 10,
-              marginBottom: 12,
-            }}
-          >
-            <MiniLabel>Recommended next action</MiniLabel>
-            <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(0,0,0,0.85)", lineHeight: 1.45 }}>
-              {String(j.nextAction)}
-            </div>
-          </div>
-        ) : null}
-
-        {j.followUp ? (
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <MiniLabel>Suggested follow-up message</MiniLabel>
-              <SoftButton type="button" onClick={() => copy(String(j.followUp))}>
-                Copy
-              </SoftButton>
-            </div>
-            <div
-              style={{
-                borderRadius: 12,
-                border: "1px solid rgba(0,0,0,0.10)",
-                background: "rgba(0,0,0,0.03)",
-                padding: 10,
-                fontSize: 13,
-                color: "rgba(0,0,0,0.80)",
-                whiteSpace: "pre-wrap",
-                lineHeight: 1.45,
-              }}
-            >
-              {String(j.followUp)}
-            </div>
-          </div>
-        ) : null}
-
-        <details style={{ marginTop: 10 }}>
-          <summary
-            style={{
-              cursor: "pointer",
-              userSelect: "none",
-              fontWeight: 800,
-              fontSize: 12,
-              color: "rgba(0,0,0,0.70)",
-              listStyle: "none",
-              outline: "none",
-            }}
-          >
-            Details
-          </summary>
-
-          <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-            {j.endedReason ? (
-              <div>
-                <MiniLabel>End reason</MiniLabel>
-                <div style={{ fontSize: 12, color: "rgba(0,0,0,0.75)" }}>{String(j.endedReason)}</div>
-              </div>
-            ) : null}
-
-            {j.transcript ? (
-              <div>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                  <MiniLabel>Transcript</MiniLabel>
-                  <SoftButton type="button" onClick={() => copy(String(j.transcript))}>
-                    Copy
-                  </SoftButton>
-                </div>
-                <pre
-                  style={{
-                    margin: 0,
-                    borderRadius: 12,
-                    border: "1px solid rgba(0,0,0,0.10)",
-                    background: "rgba(0,0,0,0.03)",
-                    padding: 10,
-                    fontSize: 12,
-                    color: "rgba(0,0,0,0.80)",
-                    whiteSpace: "pre-wrap",
-                    lineHeight: 1.45,
-                    maxHeight: 220,
-                    overflow: "auto",
-                  }}
-                >
-                  {String(j.transcript)}
-                </pre>
-              </div>
-            ) : null}
-
-            {j.outcome ? (
-              <div>
-                <MiniLabel>System outcome</MiniLabel>
-                <div style={{ fontSize: 12, color: "rgba(0,0,0,0.65)" }}>{String(j.outcome)}</div>
-              </div>
-            ) : null}
-          </div>
-        </details>
+      <div style={{ fontSize: 13, color: "rgba(0,0,0,0.82)", lineHeight: 1.45, flex: 1 }}>
+        {props.value}
       </div>
     </div>
   );
 }
+
+// ---------------- Robust analysis extraction ----------------
+
+// Vapi/OpenAI sometimes returns fenced JSON (` ```json {...} ``` `) or plain JSON string.
+// This normalizes it, parses when possible, and returns structured fields.
+function stripFences(s: string) {
+  const t = s.trim();
+  if (t.startsWith("```")) {
+    return t.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
+  }
+  return t;
+}
+
+function tryParseJsonObject(s: string): any | null {
+  const raw = stripFences(String(s ?? "").trim());
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") return parsed;
+    return null;
+  } catch {
+    // Try to salvage: find first { ... } block
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      const chunk = raw.slice(start, end + 1);
+      try {
+        const parsed2 = JSON.parse(chunk);
+        if (parsed2 && typeof parsed2 === "object") return parsed2;
+      } catch {}
+    }
+    return null;
+  }
+}
+
+function deriveSummary(j: LoaderData["recentJobs"][number]) {
+  // Priority: analysisJson
+  const aj = j.analysisJson ? tryParseJsonObject(j.analysisJson) : null;
+
+  // Fallback: if reason/outcome contains JSON blob (your screenshot), parse it.
+  const fromReason = !aj && j.reason ? tryParseJsonObject(j.reason) : null;
+  const fromOutcome = !aj && !fromReason && j.outcome ? tryParseJsonObject(j.outcome) : null;
+
+  const obj = aj ?? fromReason ?? fromOutcome;
+
+  const sentiment = cleanSentiment(obj?.sentiment ?? j.sentiment);
+  const tags =
+    Array.isArray(obj?.tags)
+      ? obj.tags.map((x: any) => String(x ?? "").trim()).filter(Boolean).slice(0, 12)
+      : splitTags(j.tagsCsv);
+
+  const reason =
+    (typeof obj?.reason === "string" && obj.reason.trim()) ? obj.reason.trim() :
+    (j.reason && !tryParseJsonObject(j.reason) ? j.reason : null);
+
+  const nextAction =
+    (typeof obj?.nextAction === "string" && obj.nextAction.trim()) ? obj.nextAction.trim() :
+    (j.nextAction ?? null);
+
+  const followUp =
+    (typeof obj?.followUp === "string" && obj.followUp.trim()) ? obj.followUp.trim() :
+    (j.followUp ?? null);
+
+  const confidence =
+    typeof obj?.confidence === "number" && Number.isFinite(obj.confidence)
+      ? Math.max(0, Math.min(1, obj.confidence))
+      : null;
+
+  return { sentiment, tags, reason, nextAction, followUp, confidence };
+}
+
+function ConfidenceBar({ value }: { value: number }) {
+  const pct = Math.round(value * 100);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div
+        style={{
+          height: 8,
+          width: 120,
+          borderRadius: 999,
+          background: "rgba(0,0,0,0.08)",
+          overflow: "hidden",
+          border: "1px solid rgba(0,0,0,0.10)",
+        }}
+      >
+        <div
+          style={{
+            height: "100%",
+            width: `${pct}%`,
+            background: "rgba(59,130,246,0.55)",
+          }}
+        />
+      </div>
+      <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.60)" }}>{pct}%</div>
+    </div>
+  );
+}
+
+function SummaryDrawer({ job }: { job: LoaderData["recentJobs"][number] }) {
+  const s = deriveSummary(job);
+
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {}
+  };
+
+  const status = String(job.status || "").toUpperCase();
+
+  const headline =
+    status === "COMPLETED" ? "Call summary" :
+    status === "CALLING" ? "Call in progress" :
+    status === "QUEUED" ? "Queued" :
+    status === "FAILED" ? "Failed" :
+    "Details";
+
+  const subline =
+    status === "QUEUED"
+      ? `Scheduled for ${formatWhen(job.scheduledFor)}`
+      : status === "CALLING"
+        ? "Waiting for end-of-call report"
+        : status === "FAILED"
+          ? "Provider error or max attempts reached"
+          : `Created at ${formatWhen(job.createdAt)}`;
+
+  const hasStructured =
+    Boolean(s.sentiment) || Boolean(s.tags.length) || Boolean(s.reason) || Boolean(s.nextAction) || Boolean(s.followUp);
+
+  return (
+    <details
+      style={{
+        borderRadius: 14,
+        border: "1px solid rgba(0,0,0,0.10)",
+        background: "white",
+        overflow: "hidden",
+        minWidth: 420,
+      }}
+    >
+      <summary
+        style={{
+          listStyle: "none",
+          cursor: "pointer",
+          padding: "10px 12px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          background: "rgba(0,0,0,0.02)",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <div style={{ fontSize: 13, fontWeight: 900 }}>{headline}</div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(0,0,0,0.55)" }}>{subline}</div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {status === "COMPLETED" && s.sentiment ? <SentimentPill sentiment={s.sentiment as any} /> : null}
+          {status === "COMPLETED" && s.tags.length ? <Pill>{s.tags.length} tags</Pill> : null}
+          <SoftButton type="button">Open</SoftButton>
+        </div>
+      </summary>
+
+      <div style={{ padding: 12, display: "grid", gap: 12 }}>
+        {status === "COMPLETED" && s.confidence != null ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.55)" }}>Confidence</div>
+            <ConfidenceBar value={s.confidence} />
+          </div>
+        ) : null}
+
+        {status === "COMPLETED" && s.tags.length ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {s.tags.map((t) => (
+              <Pill key={t}>{t}</Pill>
+            ))}
+          </div>
+        ) : null}
+
+        {status === "COMPLETED" && hasStructured ? (
+          <div style={{ display: "grid", gap: 10 }}>
+            <KeyValueRow label="What happened" value={s.reason ? String(s.reason) : "—"} />
+
+            {s.nextAction ? (
+              <div
+                style={{
+                  borderRadius: 12,
+                  border: "1px solid rgba(59,130,246,0.22)",
+                  background: "rgba(59,130,246,0.06)",
+                  padding: 10,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.55)", marginBottom: 6 }}>
+                  Recommended next action
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 900, color: "rgba(0,0,0,0.85)", lineHeight: 1.45 }}>
+                  {String(s.nextAction)}
+                </div>
+              </div>
+            ) : null}
+
+            {s.followUp ? (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.55)" }}>
+                    Suggested follow-up
+                  </div>
+                  <SoftButton type="button" onClick={() => copy(String(s.followUp))}>
+                    Copy
+                  </SoftButton>
+                </div>
+                <div
+                  style={{
+                    marginTop: 8,
+                    borderRadius: 12,
+                    border: "1px solid rgba(0,0,0,0.10)",
+                    background: "rgba(0,0,0,0.03)",
+                    padding: 10,
+                    fontSize: 13,
+                    color: "rgba(0,0,0,0.82)",
+                    whiteSpace: "pre-wrap",
+                    lineHeight: 1.45,
+                  }}
+                >
+                  {String(s.followUp)}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: 12, display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              {job.recordingUrl ? (
+                <a href={String(job.recordingUrl)} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                  <SoftButton type="button" tone="primary">Recording</SoftButton>
+                </a>
+              ) : null}
+              {job.providerCallId ? <Pill>Call ID: {String(job.providerCallId).slice(0, 10)}…</Pill> : null}
+              {job.endedReason ? <Pill>{String(job.endedReason)}</Pill> : null}
+            </div>
+
+            {job.transcript ? (
+              <SoftButton type="button" onClick={() => copy(String(job.transcript))}>Copy transcript</SoftButton>
+            ) : null}
+          </div>
+
+          {job.transcript ? (
+            <pre
+              style={{
+                margin: 0,
+                borderRadius: 12,
+                border: "1px solid rgba(0,0,0,0.10)",
+                background: "rgba(0,0,0,0.03)",
+                padding: 10,
+                fontSize: 12,
+                color: "rgba(0,0,0,0.82)",
+                whiteSpace: "pre-wrap",
+                lineHeight: 1.45,
+                maxHeight: 220,
+                overflow: "auto",
+              }}
+            >
+              {String(job.transcript)}
+            </pre>
+          ) : (
+            <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(0,0,0,0.55)" }}>
+              Transcript not available.
+            </div>
+          )}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+// ---------------- loader/action ----------------
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -538,17 +516,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         scheduledFor: true,
         attempts: true,
         createdAt: true,
-        outcome: true,
 
-        // summary fields (UI)
+        providerCallId: true,
+        recordingUrl: true,
         endedReason: true,
         transcript: true,
-        recordingUrl: true,
+
         sentiment: true,
         tagsCsv: true,
         reason: true,
         nextAction: true,
         followUp: true,
+        analysisJson: true,
+
+        outcome: true,
       },
     }),
   ]);
@@ -639,17 +620,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       try {
         await createVapiCallForJob({ shop, callJobId: job.id });
-
         await db.callJob.update({
           where: { id: job.id },
-          data: {
-            status: "CALLING",
-            outcome: "VAPI_CALL_STARTED",
-          },
+          data: { status: "CALLING", outcome: "VAPI_CALL_STARTED" },
         });
       } catch (e: any) {
         const maxAttempts = settings.maxAttempts ?? 2;
-
         const fresh = await db.callJob.findUnique({
           where: { id: job.id },
           select: { attempts: true },
@@ -659,22 +635,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         if (attemptsAfter >= maxAttempts) {
           await db.callJob.update({
             where: { id: job.id },
-            data: {
-              status: "FAILED",
-              outcome: `ERROR: ${String(e?.message ?? e)}`,
-            },
+            data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
           });
         } else {
           const retryMinutes = settings.retryMinutes ?? 180;
           const next = new Date(Date.now() + retryMinutes * 60 * 1000);
-
           await db.callJob.update({
             where: { id: job.id },
-            data: {
-              status: "QUEUED",
-              scheduledFor: next,
-              outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
-            },
+            data: { status: "QUEUED", scheduledFor: next, outcome: `RETRY_SCHEDULED in ${retryMinutes}m` },
           });
         }
       }
@@ -691,28 +659,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!vapiOk) {
       await db.callJob.updateMany({
         where: { id: callJobId, shop },
-        data: {
-          outcome:
-            "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)",
-        },
+        data: { outcome: "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)" },
       });
       return redirectBack();
     }
 
     const locked = await db.callJob.updateMany({
       where: { id: callJobId, shop, status: "QUEUED" },
-      data: {
-        status: "CALLING",
-        attempts: { increment: 1 },
-        provider: "vapi",
-        outcome: null,
-      },
+      data: { status: "CALLING", attempts: { increment: 1 }, provider: "vapi", outcome: null },
     });
     if (locked.count === 0) return redirectBack();
 
     try {
       await createVapiCallForJob({ shop, callJobId });
-
       await db.callJob.updateMany({
         where: { id: callJobId, shop },
         data: { status: "CALLING", outcome: "VAPI_CALL_STARTED" },
@@ -730,22 +689,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (attemptsAfter >= maxAttempts) {
         await db.callJob.updateMany({
           where: { id: callJobId, shop },
-          data: {
-            status: "FAILED",
-            outcome: `ERROR: ${String(e?.message ?? e)}`,
-          },
+          data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
         });
       } else {
         const retryMinutes = settings.retryMinutes ?? 180;
         const next = new Date(Date.now() + retryMinutes * 60 * 1000);
-
         await db.callJob.updateMany({
           where: { id: callJobId, shop },
-          data: {
-            status: "QUEUED",
-            scheduledFor: next,
-            outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
-          },
+          data: { status: "QUEUED", scheduledFor: next, outcome: `RETRY_SCHEDULED in ${retryMinutes}m` },
         });
       }
     }
@@ -777,57 +728,33 @@ export default function Dashboard() {
         <s-inline-grid columns={{ xs: 1, sm: 2, md: 4 }} gap="base">
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">
-                Abandoned checkouts
-              </s-text>
-              <s-text as="p" variant="headingLg">
-                {stats.abandonedCount7d}
-              </s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">
-                Last 7 days (DB)
-              </s-text>
+              <s-text as="h3" variant="headingSm">Abandoned checkouts</s-text>
+              <s-text as="p" variant="headingLg">{stats.abandonedCount7d}</s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">Last 7 days (DB)</s-text>
             </s-stack>
           </s-card>
 
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">
-                Potential revenue
-              </s-text>
-              <s-text as="p" variant="headingLg">
-                {money(stats.potentialRevenue7d)}
-              </s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">
-                Last 7 days (DB)
-              </s-text>
+              <s-text as="h3" variant="headingSm">Potential revenue</s-text>
+              <s-text as="p" variant="headingLg">{money(stats.potentialRevenue7d)}</s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">Last 7 days (DB)</s-text>
             </s-stack>
           </s-card>
 
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">
-                Calls queued
-              </s-text>
-              <s-text as="p" variant="headingLg">
-                {stats.queuedCalls}
-              </s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">
-                Ready to dial
-              </s-text>
+              <s-text as="h3" variant="headingSm">Calls queued</s-text>
+              <s-text as="p" variant="headingLg">{stats.queuedCalls}</s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">Ready to dial</s-text>
             </s-stack>
           </s-card>
 
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">
-                Completed calls
-              </s-text>
-              <s-text as="p" variant="headingLg">
-                {stats.completedCalls7d}
-              </s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">
-                Last 7 days (DB)
-              </s-text>
+              <s-text as="h3" variant="headingSm">Completed calls</s-text>
+              <s-text as="p" variant="headingLg">{stats.completedCalls7d}</s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">Last 7 days (DB)</s-text>
             </s-stack>
           </s-card>
         </s-inline-grid>
@@ -846,7 +773,7 @@ export default function Dashboard() {
                   border: "1px solid rgba(0,0,0,0.12)",
                   background: "white",
                   cursor: "pointer",
-                  fontWeight: 600,
+                  fontWeight: 700,
                 }}
               >
                 Run queued jobs
@@ -863,9 +790,7 @@ export default function Dashboard() {
           <s-divider />
 
           {recentJobs.length === 0 ? (
-            <s-text as="p" tone="subdued">
-              No call jobs yet.
-            </s-text>
+            <s-text as="p" tone="subdued">No call jobs yet.</s-text>
           ) : (
             <s-table>
               <s-table-head>
@@ -887,14 +812,18 @@ export default function Dashboard() {
                     <s-table-cell>{j.checkoutId}</s-table-cell>
                     <s-table-cell>{j.customerName ?? "-"}</s-table-cell>
                     <s-table-cell>{j.cartPreview ?? "-"}</s-table-cell>
+
                     <s-table-cell>
-                      <StatusBadge status={j.status} />
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <StatusPill status={j.status} />
+                      </div>
                     </s-table-cell>
+
                     <s-table-cell>{formatWhen(j.scheduledFor)}</s-table-cell>
                     <s-table-cell>{j.attempts}</s-table-cell>
 
                     <s-table-cell>
-                      <CallOutcomeCard job={j} />
+                      <SummaryDrawer job={j} />
                     </s-table-cell>
 
                     <s-table-cell>
@@ -910,7 +839,7 @@ export default function Dashboard() {
                             border: "1px solid rgba(0,0,0,0.12)",
                             background: j.status === "QUEUED" ? "white" : "#f3f3f3",
                             cursor: j.status === "QUEUED" ? "pointer" : "not-allowed",
-                            fontWeight: 600,
+                            fontWeight: 700,
                           }}
                         >
                           Call now
