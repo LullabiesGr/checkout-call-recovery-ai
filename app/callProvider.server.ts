@@ -86,7 +86,7 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
   const systemPrompt = buildSystemPrompt({
     merchantPrompt: (settings as any)?.userPrompt ?? "",
     checkout: {
-      checkoutId: checkout.checkoutId,
+      checkoutId: String(checkout.checkoutId),
       customerName: checkout.customerName,
       email: checkout.email,
       phone: checkout.phone,
@@ -96,13 +96,13 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     },
   });
 
-  // Lock job -> CALLING
+  // DO NOT increment attempts here.
+  // Attempts must be incremented exactly once in the runner lock (/api/run-calls).
   await db.callJob.update({
     where: { id: job.id },
     data: {
       status: "CALLING",
       provider: "vapi",
-      attempts: { increment: 1 },
       outcome: null,
     },
   });
@@ -127,7 +127,6 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
         name: checkout.customerName ?? undefined,
       },
 
-      // dynamic per-call override (prompt only; assistant stays central)
       assistant: {
         model: {
           provider: "openai",
@@ -142,8 +141,14 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
           ],
         },
 
+        // webhook
         serverUrl: webhookUrl,
-        serverMessages: ["status-update", "end-of-call-report",  'transcript[transcriptType="final"]',
+        serverMessages: [
+          "status-update",
+          "end-of-call-report",
+          'transcript[transcriptType="final"]',
+        ],
+
         metadata: {
           shop: params.shop,
           callJobId: job.id,
@@ -179,6 +184,7 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     data: {
       providerCallId: providerCallId || null,
       outcome: `VAPI_CALL_CREATED`,
+      status: "CALLING",
     },
   });
 

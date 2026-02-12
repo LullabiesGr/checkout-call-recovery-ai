@@ -10,18 +10,13 @@ export async function action({ request }: ActionFunctionArgs) {
     if (got !== want) return new Response("Unauthorized", { status: 401 });
   }
 
-  // shops = όλα τα εγκατεστημένα (Settings rows)
   const shops = (await db.settings.findMany({ select: { shop: true } })).map((x) => x.shop);
 
   let markedTotal = 0;
   let enqueuedTotal = 0;
 
-  // Useful debug counts
-  let queuedDueBefore = 0;
-  let queuedDueAfter = 0;
-
   const nowBefore = new Date();
-  queuedDueBefore = await db.callJob.count({
+  const queuedDueBefore = await db.callJob.count({
     where: { status: "QUEUED", scheduledFor: { lte: nowBefore } },
   });
 
@@ -37,18 +32,20 @@ export async function action({ request }: ActionFunctionArgs) {
       minOrderValue: settings.minOrderValue,
       callWindowStart: (settings as any).callWindowStart ?? "09:00",
       callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
-      delayMinutes: settings.delayMinutes, // ✅ critical
+      delayMinutes: settings.delayMinutes,
+      maxAttempts: settings.maxAttempts ?? 1,
+      retryMinutes: settings.retryMinutes ?? 0,
     } as any);
 
     enqueuedTotal += (enq as any)?.enqueued ?? 0;
   }
 
   const nowAfter = new Date();
-  queuedDueAfter = await db.callJob.count({
+  const queuedDueAfter = await db.callJob.count({
     where: { status: "QUEUED", scheduledFor: { lte: nowAfter } },
   });
 
-  // Run calls via existing endpoint (/api/run-calls) and SURFACE RESULT
+  // Kick dialer
   let runCallsStatus: number | null = null;
   let runCallsBody: any = null;
 

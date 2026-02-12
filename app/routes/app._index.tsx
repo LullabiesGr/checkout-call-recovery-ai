@@ -11,7 +11,6 @@ import db from "../db.server";
 import {
   ensureSettings,
   markAbandonedByDelay,
-  enqueueCallJobs,
   syncAbandonedCheckoutsFromShopify,
 } from "../callRecovery.server";
 import { createVapiCallForJob } from "../callProvider.server";
@@ -60,16 +59,10 @@ function buildCartPreview(itemsJson?: string | null): string | null {
 }
 
 function isVapiConfiguredFromEnv() {
-  const assistantId =
-    process.env.VAPI_ASSISTANT_ID || process.env.VAPI_ASSISTANT_ID?.trim();
-  const phoneNumberId =
-    process.env.VAPI_PHONE_NUMBER_ID || process.env.VAPI_PHONE_NUMBER_ID?.trim();
-  const apiKey =
-    process.env.VAPI_API_KEY || process.env.VAPI_API_KEY?.trim();
-
-  return Boolean(String(apiKey || "").trim()) &&
-    Boolean(String(assistantId || "").trim()) &&
-    Boolean(String(phoneNumberId || "").trim());
+  const assistantId = process.env.VAPI_ASSISTANT_ID?.trim();
+  const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID?.trim();
+  const apiKey = process.env.VAPI_API_KEY?.trim();
+  return Boolean(apiKey) && Boolean(assistantId) && Boolean(phoneNumberId);
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -78,19 +71,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const settings = await ensureSettings(shop);
 
-  // Data pipeline
+  // Data pipeline (NO enqueue here; cron enqueues)
   await syncAbandonedCheckoutsFromShopify({ admin, shop, limit: 50 });
   await markAbandonedByDelay(shop, settings.delayMinutes);
-
-  await enqueueCallJobs({
-  shop,
-  enabled: settings.enabled,
-  minOrderValue: settings.minOrderValue,
-  callWindowStart: (settings as any).callWindowStart ?? "09:00",
-  callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
-  delayMinutes: settings.delayMinutes,
-});
-
 
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
@@ -184,14 +167,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: {
         shop,
         status: "QUEUED",
-        scheduledFor: { lte: now }, // honor schedule
+        scheduledFor: { lte: now }, // honor schedule strictly
       },
       orderBy: { scheduledFor: "asc" },
       take: 10,
     });
 
     for (const job of jobs) {
-      // lock
+      // lock (attempts increment happens here, not in callProvider)
       const locked = await db.callJob.updateMany({
         where: { id: job.id, shop, status: "QUEUED" },
         data: {
@@ -216,15 +199,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
 
       try {
-        // createVapiCallForJob should:
-        // - read merchant prompt from Settings (DB)
-        // - compose default preprompt + merchant prompt + checkout context
-        // - create call via Vapi using ENV assistant/phone ids
-        // - persist providerCallId + outcome/status updates
+        // createVapiCallForJob should NOT increment attempts.
         await createVapiCallForJob({ shop, callJobId: job.id });
+
+        // Keep CALLING until webhook ends it (prevents enqueue duplicates)
+        await db.callJob.update({
+          where: { id: job.id },
+          data: {
+            status: "CALLING",
+            outcome: "VAPI_CALL_STARTED",
+          },
+        });
       } catch (e: any) {
-        const attemptsAfter = (job.attempts ?? 0) + 1;
         const maxAttempts = settings.maxAttempts ?? 2;
+
+        // re-read attempts after lock increment
+        const fresh = await db.callJob.findUnique({
+          where: { id: job.id },
+          select: { attempts: true },
+        });
+        const attemptsAfter = Number(fresh?.attempts ?? 0);
 
         if (attemptsAfter >= maxAttempts) {
           await db.callJob.update({
@@ -262,18 +256,56 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!vapiOk) {
       await db.callJob.updateMany({
         where: { id: callJobId, shop },
-        data: { outcome: "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)" },
+        data: {
+          outcome:
+            "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)",
+        },
       });
       return redirectBack();
     }
 
+    // lock manual call too (avoid double fire)
+    const locked = await db.callJob.updateMany({
+      where: { id: callJobId, shop, status: "QUEUED" },
+      data: { status: "CALLING", attempts: { increment: 1 }, provider: "vapi", outcome: null },
+    });
+    if (locked.count === 0) return redirectBack();
+
     try {
       await createVapiCallForJob({ shop, callJobId });
-    } catch (e: any) {
+
       await db.callJob.updateMany({
         where: { id: callJobId, shop },
-        data: { outcome: `ERROR: ${String(e?.message ?? e)}` },
+        data: { status: "CALLING", outcome: "VAPI_CALL_STARTED" },
       });
+    } catch (e: any) {
+      const settings = await ensureSettings(shop);
+      const maxAttempts = settings.maxAttempts ?? 2;
+
+      const fresh = await db.callJob.findUnique({
+        where: { id: callJobId },
+        select: { attempts: true },
+      });
+      const attemptsAfter = Number(fresh?.attempts ?? 0);
+
+      if (attemptsAfter >= maxAttempts) {
+        await db.callJob.updateMany({
+          where: { id: callJobId, shop },
+          data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
+        });
+      } else {
+        const retryMinutes = settings.retryMinutes ?? 180;
+        const next = new Date(Date.now() + retryMinutes * 60 * 1000);
+
+        await db.callJob.updateMany({
+          where: { id: callJobId, shop },
+          data: {
+            status: "QUEUED",
+            scheduledFor: next,
+            outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
+          },
+        });
+      }
     }
 
     return redirectBack();
@@ -456,4 +488,5 @@ export function ErrorBoundary() {
   return boundary.error(useRouteError());
 }
 
-export const headers: HeadersFunction = (headersArgs) => boundary.headers(headersArgs);
+export const headers: HeadersFunction = (headersArgs) =>
+  boundary.headers(headersArgs);

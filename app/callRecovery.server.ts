@@ -33,9 +33,8 @@ function nextTimeWithinWindow(now: Date, startHHMM: string, endHHMM: string, lea
   next.setSeconds(0, 0);
   next.setHours(Math.floor(windowStart / 60), windowStart % 60, 0, 0);
 
-    if (minsNow > windowEnd) next.setDate(next.getDate() + 1);
+  if (minsNow > windowEnd) next.setDate(next.getDate() + 1);
   else if (minsNow > windowStart) next.setDate(next.getDate() + 1);
-
 
   return next;
 }
@@ -115,6 +114,13 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
       const currency = String(n?.totalPriceSet?.shopMoney?.currencyCode ?? "USD");
       const completedAt = n?.completedAt ? new Date(n.completedAt) : null;
 
+      // IMPORTANT:
+      // - Keep status ABANDONED (Shopify already considers it abandoned),
+      // - Use abandonedAt = Shopify updatedAt/createdAt so delay can be enforced reliably.
+      const abandonedAt = completedAt
+        ? null
+        : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now());
+
       await db.checkout.upsert({
         where: { shop_checkoutId: { shop, checkoutId } },
         create: {
@@ -126,7 +132,7 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
           value: Number.isFinite(amount) ? amount : 0,
           currency,
           status: completedAt ? "CONVERTED" : "ABANDONED",
-          abandonedAt: completedAt ? null : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
+          abandonedAt,
           raw: JSON.stringify(n ?? null),
           customerName,
           itemsJson,
@@ -137,7 +143,7 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
           value: Number.isFinite(amount) ? amount : 0,
           currency,
           status: completedAt ? "CONVERTED" : "ABANDONED",
-          abandonedAt: completedAt ? null : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
+          abandonedAt,
           raw: JSON.stringify(n ?? null),
           customerName,
           itemsJson,
@@ -175,15 +181,16 @@ export async function ensureSettings(shop: string) {
   );
 }
 
-
 export async function markAbandonedByDelay(shop: string, delayMinutes: number) {
+  // Legacy path (kept). Your pipeline uses status=ABANDONED directly from sync,
+  // so this typically does nothing, but it’s harmless.
   const cutoff = new Date(Date.now() - delayMinutes * 60 * 1000);
 
   return db.checkout.updateMany({
     where: {
       shop,
       status: "OPEN",
-      createdAt: { lte: cutoff }, // important: createdAt, not updatedAt
+      createdAt: { lte: cutoff },
     },
     data: {
       status: "ABANDONED",
@@ -199,20 +206,36 @@ export async function enqueueCallJobs(params: {
   callWindowStart: string;
   callWindowEnd: string;
   delayMinutes: number;
+  maxAttempts: number;   // per-checkout cap
+  retryMinutes: number;  // if you want re-queue after failures
 }) {
+  const {
+    shop,
+    enabled,
+    minOrderValue,
+    callWindowStart,
+    callWindowEnd,
+    delayMinutes,
+    maxAttempts,
+    retryMinutes,
+  } = params;
 
-  const { shop, enabled, minOrderValue, callWindowStart, callWindowEnd } = params;
   if (!enabled) return { enqueued: 0 };
 
+  const now = new Date();
+  const delayCutoff = new Date(now.getTime() - Math.max(0, Number(delayMinutes || 0)) * 60 * 1000);
+
+  // Only ABANDONED checkouts whose abandonedAt is old enough (delay respected)
   const candidates = await db.checkout.findMany({
     where: {
       shop,
       status: "ABANDONED",
       phone: { not: null },
       value: { gte: minOrderValue },
+      abandonedAt: { not: null, lte: delayCutoff },
     },
     select: { checkoutId: true, phone: true },
-    take: 100,
+    take: 200,
   });
 
   let enqueued = 0;
@@ -221,7 +244,8 @@ export async function enqueueCallJobs(params: {
     const phone = String(c.phone || "").trim();
     if (!phone) continue;
 
-    const exists = await db.callJob.findFirst({
+    // If there is already a queued/calling job, never create another.
+    const inFlight = await db.callJob.findFirst({
       where: {
         shop,
         checkoutId: c.checkoutId,
@@ -229,11 +253,33 @@ export async function enqueueCallJobs(params: {
       },
       select: { id: true },
     });
-    if (exists) continue;
+    if (inFlight) continue;
 
-    const lead = Math.max(0, Number(params.delayMinutes ?? 0));
-const scheduledFor = nextTimeWithinWindow(new Date(), callWindowStart, callWindowEnd, lead);
+    // Cap total call jobs per checkout (this is what stops “every 2 minutes forever”)
+    const totalForCheckout = await db.callJob.count({
+      where: { shop, checkoutId: c.checkoutId },
+    });
+    if (totalForCheckout >= Math.max(1, Number(maxAttempts || 1))) continue;
 
+    // Optional: if last attempt failed recently, enforce retryMinutes
+    const last = await db.callJob.findFirst({
+      where: { shop, checkoutId: c.checkoutId },
+      orderBy: { createdAt: "desc" },
+      select: { status: true, createdAt: true },
+    });
+
+    if (last && (last.status === "FAILED" || last.status === "COMPLETED")) {
+      const retryMs = Math.max(0, Number(retryMinutes || 0)) * 60 * 1000;
+      if (retryMs > 0) {
+        const nextAllowed = new Date(new Date(last.createdAt).getTime() + retryMs);
+        if (nextAllowed > now) continue;
+      }
+    }
+
+    // Scheduling:
+    // - delay is already enforced by abandonedAt cutoff
+    // - so leadMinutes must be 0 (otherwise you “re-delay” from now every cron tick)
+    const scheduledFor = nextTimeWithinWindow(now, callWindowStart, callWindowEnd, 0);
 
     await db.callJob.create({
       data: {

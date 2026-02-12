@@ -6,7 +6,6 @@ import { startVapiCallForJob } from "../callProvider.server";
 
 // POST /api/run-calls
 export async function action({ request }: ActionFunctionArgs) {
-  // Simple auth gate
   const want = process.env.RUN_CALLS_SECRET || "";
   if (want) {
     const got = request.headers.get("x-run-calls-secret") || "";
@@ -15,31 +14,28 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const now = new Date();
 
-  // === GRACE WINDOW (±2 minutes ahead safe, never misses late jobs) ===
-  const GRACE_MS = 2 * 60 * 1000; // 2 minutes
-  const upper = new Date(now.getTime() + GRACE_MS);
-
-  // Pull due jobs (anything scheduled up to now + 2 minutes)
+  // DO NOT use grace window. It causes “early” calls and can look like spam loops.
   const jobs = await db.callJob.findMany({
     where: {
       status: "QUEUED",
-      scheduledFor: { lte: upper },
+      scheduledFor: { lte: now },
     },
     orderBy: { scheduledFor: "asc" },
     take: 25,
   });
 
   let processed = 0;
-  let completed = 0;
+  let started = 0;
   let failed = 0;
 
   for (const job of jobs) {
-    // Lock to prevent double processing
+    // Lock exactly once and increment attempts exactly once here.
     const locked = await db.callJob.updateMany({
       where: { id: job.id, status: "QUEUED" },
       data: {
         status: "CALLING",
         attempts: { increment: 1 },
+        outcome: null,
       },
     });
 
@@ -48,6 +44,7 @@ export async function action({ request }: ActionFunctionArgs) {
     processed += 1;
 
     const settings = await ensureSettings(job.shop);
+    const maxAttempts = settings.maxAttempts ?? 1;
 
     try {
       const res = await startVapiCallForJob({
@@ -55,20 +52,25 @@ export async function action({ request }: ActionFunctionArgs) {
         callJobId: job.id,
       });
 
+      // IMPORTANT:
+      // keep status CALLING until webhook ends the call.
       await db.callJob.update({
         where: { id: job.id },
         data: {
-          status: "COMPLETED",
+          status: "CALLING",
           provider: "vapi",
           providerCallId: res.providerCallId ?? null,
           outcome: "VAPI_CALL_STARTED",
         },
       });
 
-      completed += 1;
+      started += 1;
     } catch (e: any) {
-      const attemptsAfter = (job.attempts ?? 0) + 1;
-      const maxAttempts = settings.maxAttempts ?? 2;
+      const jobFresh = await db.callJob.findUnique({
+        where: { id: job.id },
+        select: { attempts: true },
+      });
+      const attemptsAfter = Number(jobFresh?.attempts ?? 0);
 
       if (attemptsAfter >= maxAttempts) {
         await db.callJob.update({
@@ -99,9 +101,8 @@ export async function action({ request }: ActionFunctionArgs) {
     JSON.stringify({
       ok: true,
       now: now.toISOString(),
-      upper: upper.toISOString(),
       processed,
-      completed,
+      started,
       failed,
     }),
     { status: 200, headers: { "Content-Type": "application/json" } }
