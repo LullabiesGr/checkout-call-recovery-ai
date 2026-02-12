@@ -55,10 +55,33 @@ function pickMetadata(body: any) {
   return { shop, callJobId, checkoutId, providerCallId };
 }
 
+function extractTranscript(payload: any): string | null {
+  const direct =
+    payload?.transcript ??
+    payload?.analysis?.transcript ??
+    payload?.message?.transcript ??
+    payload?.data?.transcript ??
+    payload?.call?.transcript;
+
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+
+  const turns =
+    payload?.conversation?.turns ?? payload?.turns ?? payload?.messages ?? payload?.call?.messages;
+  if (Array.isArray(turns)) {
+    const text = turns
+      .map((t: any) => t?.text ?? t?.content ?? t?.message ?? "")
+      .map((s: any) => (typeof s === "string" ? s : s == null ? "" : String(s)).trim())
+      .filter(Boolean)
+      .join("\n");
+    if (text.trim()) return text.trim();
+  }
+
+  return null;
+}
+
 function normalizeOutcomeFromStructured(structured: any) {
   const o = structured ?? {};
 
-  // Tags might be array OR csv string depending on your schema experiments
   const tags = Array.isArray(o.tags)
     ? o.tags
     : asStr(o.tagsCsv)
@@ -74,7 +97,6 @@ function normalizeOutcomeFromStructured(structured: any) {
   const sentiment = asStr(o.sentiment);
   const followUp = asStr(o.followUpMessage) ?? asStr(o.followUp) ?? null;
 
-  // objections can be array OR csv string
   const objections = Array.isArray(o.objections)
     ? o.objections
     : asStr(o.objectionsText)
@@ -146,6 +168,99 @@ function normalizeOutcomeFromStructured(structured: any) {
   };
 }
 
+async function analyzeWithOpenAI(args: {
+  transcript: string;
+  customerName?: string | null;
+  checkoutId: string;
+  shop: string;
+}) {
+  const key = (process.env.OPENAI_API_KEY || "").trim();
+  if (!key) return null;
+
+  const model = (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
+
+  const system = `
+You analyze a phone call between a merchant AI agent and a customer about an abandoned Shopify checkout.
+
+Return STRICT JSON only. No markdown.
+
+Schema:
+{
+  "sentiment": "positive" | "neutral" | "negative",
+  "intent": "buy_now" | "buy_later" | "not_interested" | "needs_help" | "no_answer" | "wrong_number" | "other",
+  "result": "recovered" | "not_recovered" | "unknown",
+  "reasons": string[],
+  "objections": string[],
+  "tags": string[],
+  "next_action": {
+    "priority": "high" | "medium" | "low",
+    "action": string,
+    "channel": "call" | "sms" | "email" | "none",
+    "when_minutes": number
+  },
+  "short_summary": string
+}
+`.trim();
+
+  const user = `
+Shop: ${args.shop}
+CheckoutId: ${args.checkoutId}
+Customer: ${args.customerName ?? "-"}
+Transcript:
+${args.transcript}
+`.trim();
+
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      response_format: { type: "json_object" },
+    }),
+  });
+
+  if (!r.ok) return null;
+
+  const j = await r.json().catch(() => null);
+  const content = j?.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || !content.trim()) return null;
+
+  try {
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+function isEndEvent(body: any): boolean {
+  const type = asStr(body?.type) || asStr(body?.event) || "";
+  const callStatus =
+    asStr(body?.call?.status) ||
+    asStr(body?.status) ||
+    asStr(body?.message?.status) ||
+    "";
+
+  const lowered = safeJson(body, 20000)?.toLowerCase() ?? "";
+
+  if (type.toLowerCase().includes("end-of-call")) return true;
+
+  const s = callStatus.toUpperCase();
+  if (s.includes("ENDED") || s.includes("COMPLETED") || s.includes("FINISHED")) return true;
+
+  if (lowered.includes("end-of-call-report")) return true;
+  if (lowered.includes("endedreason")) return true;
+
+  return false;
+}
+
 export async function action({ request }: ActionFunctionArgs) {
   const url = new URL(request.url);
   const secret = url.searchParams.get("secret") || "";
@@ -157,7 +272,6 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const { shop, callJobId, checkoutId, providerCallId } = pickMetadata(body);
 
-  // Identify job (strong match -> weak match)
   const job =
     (shop && callJobId
       ? await db.callJob.findFirst({ where: { shop, id: callJobId } })
@@ -174,7 +288,6 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (!job) return new Response("OK", { status: 200 });
 
-  // common fields
   const endedReason =
     asStr(body?.call?.endedReason) ||
     asStr(body?.endedReason) ||
@@ -187,14 +300,12 @@ export async function action({ request }: ActionFunctionArgs) {
     asStr(body?.call?.recording?.url) ||
     null;
 
-  // transcript can arrive in multiple events; keep appending
   const transcriptChunk =
     asStr(body?.transcript) ||
     asStr(body?.message?.transcript) ||
     asStr(body?.call?.transcript) ||
     null;
 
-  // structured outputs
   const structured =
     body?.call?.analysis?.structuredOutput ??
     body?.call?.analysis?.structuredOutputs?.checkout_call_outcome ??
@@ -204,7 +315,6 @@ export async function action({ request }: ActionFunctionArgs) {
     body?.structuredOutputs?.checkout_call_outcome ??
     null;
 
-  // update status from call status
   const callStatus =
     asStr(body?.call?.status) ||
     asStr(body?.status) ||
@@ -222,25 +332,21 @@ export async function action({ request }: ActionFunctionArgs) {
   if (transcriptChunk) {
     const prev = job.transcript ? String(job.transcript) : "";
     const merged =
-      prev && !prev.endsWith("\n")
-        ? `${prev}\n${transcriptChunk}`
-        : `${prev}${transcriptChunk}`;
+      prev && !prev.endsWith("\n") ? `${prev}\n${transcriptChunk}` : `${prev}${transcriptChunk}`;
     patch.transcript = merged.slice(0, 20000);
   }
 
-  // status mapping
   if (callStatus) {
     const s = callStatus.toUpperCase();
     if (s.includes("ENDED") || s.includes("COMPLETED") || s.includes("FINISHED")) {
       patch.status = "COMPLETED";
     } else if (s.includes("FAILED")) {
       patch.status = "FAILED";
-    } else if (s.includes("IN_PROGRESS") || s.includes("CALLING")) {
+    } else if (s.includes("IN_PROGRESS") || s.includes("CALLING") || s.includes("CONNECTED")) {
       patch.status = "CALLING";
     }
   }
 
-  // If structured output exists: map it into your DB columns + JSON outcome
   if (structured && typeof structured === "object") {
     const norm = normalizeOutcomeFromStructured(structured);
 
@@ -250,17 +356,54 @@ export async function action({ request }: ActionFunctionArgs) {
     patch.nextAction = norm.nextAction ?? undefined;
     patch.followUp = norm.followUp ?? undefined;
 
-    // outcome stored as JSON string for your UI parseOutcomeJson()
     patch.outcome = safeJson(norm.outcomeJson, 2000) ?? patch.outcome;
-
-    // keep full object too
     patch.analysisJson = safeJson(norm.outcomeJson, 9000) ?? undefined;
   }
 
-  // if end-of-call-report arrives without structured output, store raw call analysis anyway
   const rawCallAnalysis = body?.call?.analysis ?? body?.analysis ?? body?.call?.callAnalysis ?? null;
   if (!structured && rawCallAnalysis) {
     patch.analysisJson = patch.analysisJson ?? safeJson(rawCallAnalysis, 9000) ?? undefined;
+  }
+
+  const endEvent = isEndEvent(body);
+  if (endEvent && !structured) {
+    const transcript = extractTranscript(body) ?? (patch.transcript ? String(patch.transcript) : null);
+
+    if (transcript) {
+      const checkout = await db.checkout
+        .findFirst({ where: { shop: job.shop, checkoutId: job.checkoutId } })
+        .catch(() => null);
+
+      const analysis = await analyzeWithOpenAI({
+        transcript,
+        customerName: checkout?.customerName ?? null,
+        checkoutId: job.checkoutId,
+        shop: job.shop,
+      });
+
+      if (analysis) {
+        const packed = {
+          type: "analysis_v1",
+          at: new Date().toISOString(),
+          analysis,
+        };
+
+        patch.status = "COMPLETED";
+        patch.outcome = safeJson(packed, 2000) ?? patch.outcome;
+        patch.analysisJson = safeJson(packed, 9000) ?? patch.analysisJson;
+      } else if (!patch.outcome) {
+        patch.status = "COMPLETED";
+        patch.outcome = safeJson(
+          {
+            type: "analysis_fallback_v1",
+            at: new Date().toISOString(),
+            short_summary: endedReason ?? asStr(body?.summary) ?? "Call ended.",
+            transcript: transcript.slice(0, 1400),
+          },
+          2000,
+        );
+      }
+    }
   }
 
   await db.callJob.update({
