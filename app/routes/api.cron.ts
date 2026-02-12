@@ -1,103 +1,99 @@
-// app/routes/api.cron.ts
+// app/routes/api.run-calls.ts
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
-import { ensureSettings, markAbandonedByDelay, enqueueCallJobs } from "../callRecovery.server";
+import { ensureSettings } from "../callRecovery.server";
+import { startVapiCallForJob } from "../callProvider.server";
 
+// POST /api/run-calls
 export async function action({ request }: ActionFunctionArgs) {
-  const want = process.env.CRON_TOKEN || "";
+  const want = process.env.RUN_CALLS_SECRET || "";
   if (want) {
-    const got = request.headers.get("x-cron-token") || "";
+    const got = request.headers.get("x-run-calls-secret") || "";
     if (got !== want) return new Response("Unauthorized", { status: 401 });
   }
 
-  const shops = (await db.settings.findMany({ select: { shop: true } })).map((x) => x.shop);
+  const now = new Date();
 
-  let markedTotal = 0;
-  let enqueuedTotal = 0;
-
-  const nowBefore = new Date();
-  const queuedDueBefore = await db.callJob.count({
-    where: { status: "QUEUED", scheduledFor: { lte: nowBefore } },
+  // pull due jobs
+  const jobs = await db.callJob.findMany({
+    where: {
+      status: "QUEUED",
+      scheduledFor: { lte: now },
+    },
+    orderBy: { scheduledFor: "asc" },
+    take: 25,
   });
 
-  // per-shop pipeline
-  for (const shop of shops) {
-    try {
-      const settings = await ensureSettings(shop);
+  let processed = 0;
+  let started = 0;
+  let failed = 0;
+  let skipped = 0;
 
-      const marked = await markAbandonedByDelay(shop, settings.delayMinutes);
-      markedTotal += (marked as any)?.count ?? 0;
-
-      const enq = await enqueueCallJobs({
-        shop,
-        enabled: settings.enabled,
-        minOrderValue: settings.minOrderValue,
-        callWindowStart: (settings as any).callWindowStart ?? "09:00",
-        callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
-        delayMinutes: settings.delayMinutes, // critical
-      } as any);
-
-      enqueuedTotal += (enq as any)?.enqueued ?? 0;
-    } catch (e) {
-      // do not fail the whole cron run because one shop failed
-      await db.cronLog
-        .create({
-          data: {
-            shop,
-            type: "cron_error",
-            message: String((e as any)?.message ?? e).slice(0, 2000),
-          },
-        })
-        .catch(() => null);
-    }
-  }
-
-  const nowAfter = new Date();
-  const queuedDueAfter = await db.callJob.count({
-    where: { status: "QUEUED", scheduledFor: { lte: nowAfter } },
-  });
-
-  // Run calls via existing endpoint (/api/run-calls)
-  let runCallsStatus: number | null = null;
-  let runCallsBody: any = null;
-
-  const appUrl = String(process.env.APP_URL || "").replace(/\/$/, "");
-  if (!appUrl) {
-    runCallsBody = { error: "Missing APP_URL env" };
-  } else {
-    const res = await fetch(`${appUrl}/api/run-calls`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(process.env.RUN_CALLS_SECRET
-          ? { "x-run-calls-secret": process.env.RUN_CALLS_SECRET }
-          : {}),
-      },
-      body: JSON.stringify({ source: "cron" }),
+  for (const job of jobs) {
+    // light lock: μην κάνεις attempts++ εδώ
+    const locked = await db.callJob.updateMany({
+      where: { id: job.id, status: "QUEUED", providerCallId: null },
+      data: ({ status: "CALLING", outcome: null } as any),
     });
+    if (locked.count === 0) {
+      skipped += 1;
+      continue;
+    }
 
-    runCallsStatus = res.status;
+    processed += 1;
 
-    const text = await res.text().catch(() => "");
+    const settings = await ensureSettings(job.shop);
+
     try {
-      runCallsBody = text ? JSON.parse(text) : null;
-    } catch {
-      runCallsBody = { raw: text };
+      const res = await startVapiCallForJob({
+        shop: job.shop,
+        callJobId: job.id,
+      });
+
+      await db.callJob.update({
+        where: { id: job.id },
+        data: ({
+          provider: "vapi",
+          providerCallId: res.providerCallId ?? null,
+          outcome: "VAPI_CALL_STARTED",
+          // status μένει CALLING — θα το γυρίσει το webhook σε COMPLETED/FAILED
+        } as any),
+      });
+
+      started += 1;
+    } catch (e: any) {
+      // διάβασε πραγματικό attempts μετά το hard-lock increment
+      const fresh = await db.callJob.findFirst({ where: { id: job.id } });
+      const attemptsAfter = Number((fresh as any)?.attempts ?? (job as any)?.attempts ?? 0);
+      const maxAttempts = Number((settings as any)?.maxAttempts ?? 2);
+
+      if (attemptsAfter >= maxAttempts) {
+        await db.callJob.update({
+          where: { id: job.id },
+          data: {
+            status: "FAILED",
+            outcome: `ERROR: ${String(e?.message ?? e)}`.slice(0, 2000),
+          },
+        });
+        failed += 1;
+      } else {
+        const retryMinutes = Number((settings as any)?.retryMinutes ?? 180);
+        const next = new Date(Date.now() + retryMinutes * 60 * 1000);
+
+        await db.callJob.update({
+          where: { id: job.id },
+          data: {
+            status: "QUEUED",
+            scheduledFor: next,
+            outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
+          },
+        });
+      }
     }
   }
 
   return new Response(
-    JSON.stringify({
-      ok: true,
-      shops: shops.length,
-      markedTotal,
-      enqueuedTotal,
-      queuedDueBefore,
-      queuedDueAfter,
-      runCallsStatus,
-      runCallsBody,
-      serverNow: new Date().toISOString(),
-    }),
+    JSON.stringify({ ok: true, processed, started, failed, skipped }),
     { status: 200, headers: { "Content-Type": "application/json" } }
   );
 }

@@ -39,10 +39,7 @@ function buildSystemPrompt(args: {
     items.length === 0
       ? "No cart items available."
       : items
-          .map(
-            (it: any) =>
-              `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`
-          )
+          .map((it: any) => `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`)
           .join("\n");
 
   const base = `
@@ -83,7 +80,7 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
   });
   if (!job) throw new Error("CallJob not found");
 
-  // already created => never create again
+  // ήδη έχει δημιουργηθεί call => μην ξαναδημιουργείς
   if (job.providerCallId) {
     return { ok: true, providerCallId: job.providerCallId, alreadyCreated: true };
   }
@@ -95,9 +92,14 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
 
   const settings = await db.settings.findUnique({ where: { shop: params.shop } });
 
+  // Back-compat: προτίμησε userPrompt, fallback στο merchantPrompt
+  const merchantPrompt =
+    (settings as any)?.userPrompt ??
+    (settings as any)?.merchantPrompt ??
+    "";
+
   const systemPrompt = buildSystemPrompt({
-    // your schema uses userPrompt, not merchantPrompt
-    merchantPrompt: (settings as any)?.userPrompt ?? "",
+    merchantPrompt,
     checkout: {
       checkoutId: checkout.checkoutId,
       customerName: checkout.customerName,
@@ -115,10 +117,7 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
 
   const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
 
-  const toNumber =
-    safeString((job as any).phone, "").trim() ||
-    safeString((checkout as any).phone, "").trim();
-
+  const toNumber = safeString((job as any).phone, "") || safeString((checkout as any).phone, "");
   if (!toNumber) {
     await db.callJob.update({
       where: { id: job.id },
@@ -127,13 +126,13 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     throw new Error("Missing phone number on CallJob/Checkout");
   }
 
-  // HARD LOCK: ONLY QUEUED -> CALLING (prevents double-attempts + spam)
+  // HARD LOCK: μία φορά μόνο. Increment attempts ΜΟΝΟ εδώ.
   const locked = await db.callJob.updateMany({
     where: {
       id: job.id,
       shop: params.shop,
-      status: "QUEUED",
       providerCallId: null,
+      status: { in: ["QUEUED", "CALLING"] },
     },
     data: {
       status: "CALLING",
@@ -164,12 +163,10 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
     body: JSON.stringify({
       phoneNumberId: VAPI_PHONE_NUMBER_ID,
       assistantId: VAPI_ASSISTANT_ID,
-
       customer: {
         number: toNumber,
         name: checkout.customerName ?? undefined,
       },
-
       assistant: {
         model: {
           provider: "openai",
@@ -183,12 +180,10 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
             },
           ],
         },
-
         serverUrl: webhookUrl,
         serverMessages: ["status-update", "end-of-call-report", "transcript"],
         metadata: callMetadata,
       },
-
       metadata: callMetadata,
     }),
   });

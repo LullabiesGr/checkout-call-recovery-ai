@@ -131,7 +131,6 @@ function parseOutcomeJson(outcome?: string | null): OutcomeAnalysis {
   const raw = String(outcome ?? "").trim();
   if (!raw) return {};
   if (!raw.startsWith("{")) return {};
-
   try {
     const obj = JSON.parse(raw);
     if (!obj || typeof obj !== "object") return {};
@@ -192,16 +191,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const settings = await ensureSettings(shop);
 
   await syncAbandonedCheckoutsFromShopify({ admin, shop, limit: 50 });
-  await markAbandonedByDelay(shop, settings.delayMinutes);
+  await markAbandonedByDelay(shop, (settings as any).delayMinutes);
 
   await enqueueCallJobs({
     shop,
-    enabled: settings.enabled,
-    minOrderValue: settings.minOrderValue,
+    enabled: Boolean((settings as any).enabled),
+    minOrderValue: Number((settings as any).minOrderValue ?? 0),
     callWindowStart: (settings as any).callWindowStart ?? "09:00",
     callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
-    delayMinutes: settings.delayMinutes,
-  });
+    delayMinutes: Number((settings as any).delayMinutes ?? 0),
+  } as any);
 
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
@@ -266,7 +265,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return {
     shop,
-    currency: normalizeCurrency(settings.currency || "USD"),
+    currency: normalizeCurrency((settings as any).currency || "USD"),
     vapiConfigured: isVapiConfiguredFromEnv(),
     stats: {
       abandonedCount7d,
@@ -285,7 +284,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         ...j,
         scheduledFor: j.scheduledFor.toISOString(),
         createdAt: j.createdAt.toISOString(),
-
         customerName: c?.customerName ?? null,
         cartPreview: buildCartPreview(c?.itemsJson ?? null),
 
@@ -336,14 +334,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     for (const job of jobs) {
-      // IMPORTANT: do NOT increment attempts here (callProvider hard-lock does it)
+      // light lock: ΜΗΝ κάνεις attempts++ εδώ, ΜΗΝ βάζεις "as any" σε λάθος θέση
       const locked = await db.callJob.updateMany({
-        where: { id: job.id, shop, status: "QUEUED" },
-        data: {
-          status: "CALLING",
-          provider: vapiOk ? "vapi" : "sim",
-          outcome: null,
-        },
+        where: { id: job.id, shop, status: "QUEUED", providerCallId: null },
+        data: ({ status: "CALLING", provider: vapiOk ? "vapi" : "sim", outcome: null } as any),
       });
 
       if (locked.count === 0) continue;
@@ -351,10 +345,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!vapiOk) {
         await db.callJob.update({
           where: { id: job.id },
-          data: {
-            status: "COMPLETED",
-            outcome: `SIMULATED_CALL_OK phone=${job.phone}`,
-          },
+          data: { status: "COMPLETED", outcome: `SIMULATED_CALL_OK phone=${job.phone}` },
         });
         continue;
       }
@@ -362,28 +353,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       try {
         await createVapiCallForJob({ shop, callJobId: job.id });
       } catch (e: any) {
-        const attemptsAfter = (job.attempts ?? 0) + 1; // job.attempts is stale; used only for decision
-        const maxAttempts = settings.maxAttempts ?? 2;
+        const fresh = await db.callJob.findFirst({ where: { id: job.id, shop } });
+        const attemptsAfter = Number((fresh as any)?.attempts ?? 0);
+        const maxAttempts = Number((settings as any)?.maxAttempts ?? 2);
 
         if (attemptsAfter >= maxAttempts) {
           await db.callJob.update({
             where: { id: job.id },
-            data: {
-              status: "FAILED",
-              outcome: `ERROR: ${String(e?.message ?? e)}`.slice(0, 2000),
-            },
+            data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}`.slice(0, 2000) },
           });
         } else {
-          const retryMinutes = settings.retryMinutes ?? 180;
+          const retryMinutes = Number((settings as any)?.retryMinutes ?? 180);
           const next = new Date(Date.now() + retryMinutes * 60 * 1000);
 
           await db.callJob.update({
             where: { id: job.id },
-            data: {
-              status: "QUEUED",
-              scheduledFor: next,
-              outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
-            },
+            data: { status: "QUEUED", scheduledFor: next, outcome: `RETRY_SCHEDULED in ${retryMinutes}m` },
           });
         }
       }
@@ -400,9 +385,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!vapiOk) {
       await db.callJob.updateMany({
         where: { id: callJobId, shop },
-        data: {
-          outcome: "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)",
-        },
+        data: { outcome: "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)" },
       });
       return redirectBack();
     }
@@ -574,12 +557,20 @@ export default function Dashboard() {
               </select>
 
               <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                <input type="checkbox" checked={onlyEarned} onChange={(e) => setOnlyEarned(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={onlyEarned}
+                  onChange={(e) => setOnlyEarned(e.target.checked)}
+                />
                 <span style={{ fontSize: 13 }}>Only earned</span>
               </label>
 
               <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                <input type="checkbox" checked={onlyAnswered} onChange={(e) => setOnlyAnswered(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={onlyAnswered}
+                  onChange={(e) => setOnlyAnswered(e.target.checked)}
+                />
                 <span style={{ fontSize: 13 }}>Only answered</span>
               </label>
 
@@ -594,68 +585,40 @@ export default function Dashboard() {
           <s-inline-grid columns={{ xs: 1, sm: 2, md: 5 }} gap="base">
             <s-card padding="base" style={ui.card as any}>
               <s-stack gap="tight">
-                <s-text as="h3" variant="headingSm">
-                  Abandoned
-                </s-text>
-                <s-text as="p" variant="headingLg">
-                  {stats.abandonedCount7d}
-                </s-text>
-                <s-text as="p" variant="bodySm" tone="subdued">
-                  Last 7 days
-                </s-text>
+                <s-text as="h3" variant="headingSm">Abandoned</s-text>
+                <s-text as="p" variant="headingLg">{stats.abandonedCount7d}</s-text>
+                <s-text as="p" variant="bodySm" tone="subdued">Last 7 days</s-text>
               </s-stack>
             </s-card>
 
             <s-card padding="base" style={ui.card as any}>
               <s-stack gap="tight">
-                <s-text as="h3" variant="headingSm">
-                  Potential
-                </s-text>
-                <s-text as="p" variant="headingLg">
-                  {money(stats.potentialRevenue7d)}
-                </s-text>
-                <s-text as="p" variant="bodySm" tone="subdued">
-                  Abandoned value
-                </s-text>
+                <s-text as="h3" variant="headingSm">Potential</s-text>
+                <s-text as="p" variant="headingLg">{money(stats.potentialRevenue7d)}</s-text>
+                <s-text as="p" variant="bodySm" tone="subdued">Abandoned value</s-text>
               </s-stack>
             </s-card>
 
             <s-card padding="base" style={ui.card as any}>
               <s-stack gap="tight">
-                <s-text as="h3" variant="headingSm">
-                  Queued
-                </s-text>
-                <s-text as="p" variant="headingLg">
-                  {stats.queuedCalls}
-                </s-text>
-                <s-text as="p" variant="bodySm" tone="subdued">
-                  Ready to dial
-                </s-text>
+                <s-text as="h3" variant="headingSm">Queued</s-text>
+                <s-text as="p" variant="headingLg">{stats.queuedCalls}</s-text>
+                <s-text as="p" variant="bodySm" tone="subdued">Ready to dial</s-text>
               </s-stack>
             </s-card>
 
             <s-card padding="base" style={ui.card as any}>
               <s-stack gap="tight">
-                <s-text as="h3" variant="headingSm">
-                  Completed
-                </s-text>
-                <s-text as="p" variant="headingLg">
-                  {stats.completedCalls7d}
-                </s-text>
-                <s-text as="p" variant="bodySm" tone="subdued">
-                  Calls completed
-                </s-text>
+                <s-text as="h3" variant="headingSm">Completed</s-text>
+                <s-text as="p" variant="headingLg">{stats.completedCalls7d}</s-text>
+                <s-text as="p" variant="bodySm" tone="subdued">Calls completed</s-text>
               </s-stack>
             </s-card>
 
             <s-card padding="base" style={ui.card as any}>
               <s-stack gap="tight">
-                <s-text as="h3" variant="headingSm">
-                  Earned
-                </s-text>
-                <s-text as="p" variant="headingLg">
-                  {money(stats.recoveredRevenue7d)}
-                </s-text>
+                <s-text as="h3" variant="headingSm">Earned</s-text>
+                <s-text as="p" variant="headingLg">{money(stats.recoveredRevenue7d)}</s-text>
                 <s-text as="p" variant="bodySm" tone="subdued">
                   Attributed · {stats.recoveredCount7d} orders
                 </s-text>
@@ -667,9 +630,7 @@ export default function Dashboard() {
         <s-section heading="Recent call jobs">
           <s-card padding="base" style={ui.card as any}>
             {rows.length === 0 ? (
-              <s-text as="p" tone="subdued">
-                No matching jobs.
-              </s-text>
+              <s-text as="p" tone="subdued">No matching jobs.</s-text>
             ) : (
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 10px" }}>
@@ -750,9 +711,7 @@ export default function Dashboard() {
                               {tags.length ? (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                                   {tags.slice(0, 6).map((t) => (
-                                    <span key={t} style={ui.chip}>
-                                      {t}
-                                    </span>
+                                    <span key={t} style={ui.chip}>{t}</span>
                                   ))}
                                 </div>
                               ) : (
@@ -825,7 +784,9 @@ export default function Dashboard() {
 
                               {hasDetails ? (
                                 <details>
-                                  <summary style={{ cursor: "pointer", fontSize: 12, opacity: 0.8 }}>Details</summary>
+                                  <summary style={{ cursor: "pointer", fontSize: 12, opacity: 0.8 }}>
+                                    Details
+                                  </summary>
                                   <div style={{ paddingTop: 10, fontSize: 13, lineHeight: 1.45 }}>
                                     {j.callOutcome ? (
                                       <div style={{ marginBottom: 8 }}>
@@ -848,9 +809,7 @@ export default function Dashboard() {
                                     {j.recordingUrl ? (
                                       <div style={{ marginBottom: 8 }}>
                                         <strong>Recording:</strong>{" "}
-                                        <a href={j.recordingUrl} target="_blank" rel="noreferrer">
-                                          Open
-                                        </a>
+                                        <a href={j.recordingUrl} target="_blank" rel="noreferrer">Open</a>
                                       </div>
                                     ) : null}
 
@@ -886,9 +845,7 @@ export default function Dashboard() {
                                   <div style={{ fontSize: 12, opacity: 0.75 }}>order {j.attributedOrderId}</div>
                                 ) : null}
                                 {j.attributedAt ? (
-                                  <div style={{ fontSize: 12, opacity: 0.75 }}>
-                                    {new Date(j.attributedAt).toLocaleString()}
-                                  </div>
+                                  <div style={{ fontSize: 12, opacity: 0.75 }}>{new Date(j.attributedAt).toLocaleString()}</div>
                                 ) : null}
                               </div>
                             ) : (

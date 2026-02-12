@@ -24,7 +24,7 @@ function nextTimeWithinWindow(
   const start = parseHHMM(startHHMM) ?? 9 * 60;
   const end = parseHHMM(endHHMM) ?? 19 * 60;
 
-  const scheduled = new Date(now.getTime() + leadMinutes * 60 * 1000);
+  const scheduled = new Date(now.getTime() + Math.max(0, leadMinutes) * 60 * 1000);
 
   const windowStart = Math.min(start, end);
   const windowEnd = Math.max(start, end);
@@ -38,9 +38,10 @@ function nextTimeWithinWindow(
   next.setSeconds(0, 0);
   next.setHours(Math.floor(windowStart / 60), windowStart % 60, 0, 0);
 
-  // after window OR already passed start => next day at windowStart
+  // Αν είμαστε μέσα/μετά το windowStart σήμερα, πάμε αύριο στο windowStart.
+  if (minsNow >= windowStart) next.setDate(next.getDate() + 1);
+  // Αν είμαστε μετά το windowEnd, επίσης αύριο (ήδη true από πάνω).
   if (minsNow > windowEnd) next.setDate(next.getDate() + 1);
-  else if (minsNow > windowStart) next.setDate(next.getDate() + 1);
 
   return next;
 }
@@ -64,7 +65,9 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
             completedAt
             email
             phone
-            totalPriceSet { shopMoney { amount currencyCode } }
+            totalPriceSet {
+              shopMoney { amount currencyCode }
+            }
             shippingAddress { firstName lastName }
             customer { firstName lastName }
             lineItems(first: 10) {
@@ -85,9 +88,7 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
 
   try {
     const res = await admin.graphql(query, { variables: { first: limit } });
-    const json =
-      typeof (res as any)?.json === "function" ? await (res as any).json() : res;
-
+    const json = typeof (res as any)?.json === "function" ? await (res as any).json() : res;
     const edges = json?.data?.abandonedCheckouts?.edges ?? [];
     if (!Array.isArray(edges)) return { synced: 0 };
 
@@ -135,9 +136,7 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
           value: Number.isFinite(amount) ? amount : 0,
           currency,
           status: completedAt ? "CONVERTED" : "ABANDONED",
-          abandonedAt: completedAt
-            ? null
-            : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
+          abandonedAt: completedAt ? null : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
           raw: JSON.stringify(n ?? null),
           customerName,
           itemsJson,
@@ -148,9 +147,7 @@ export async function syncAbandonedCheckoutsFromShopify(params: {
           value: Number.isFinite(amount) ? amount : 0,
           currency,
           status: completedAt ? "CONVERTED" : "ABANDONED",
-          abandonedAt: completedAt
-            ? null
-            : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
+          abandonedAt: completedAt ? null : new Date(n?.updatedAt ?? n?.createdAt ?? Date.now()),
           raw: JSON.stringify(n ?? null),
           customerName,
           itemsJson,
@@ -182,14 +179,13 @@ export async function ensureSettings(shop: string) {
         callWindowEnd: "19:00",
         vapiAssistantId: null,
         vapiPhoneNumberId: null,
+        merchantPrompt: "",
         userPrompt: "",
       } as any,
     }))
   );
 }
 
-// NOTE: this only matters if you still create OPEN rows elsewhere.
-// Your sync currently writes ABANDONED directly.
 export async function markAbandonedByDelay(shop: string, delayMinutes: number) {
   const cutoff = new Date(Date.now() - delayMinutes * 60 * 1000);
 
@@ -197,7 +193,7 @@ export async function markAbandonedByDelay(shop: string, delayMinutes: number) {
     where: {
       shop,
       status: "OPEN",
-      createdAt: { lte: cutoff },
+      createdAt: { lte: cutoff }, // createdAt, not updatedAt
     },
     data: {
       status: "ABANDONED",
@@ -206,26 +202,28 @@ export async function markAbandonedByDelay(shop: string, delayMinutes: number) {
   });
 }
 
+function readCooldownHours(settings: any): number {
+  const raw = Number(settings?.cooldownHours);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  // fallback default if column not present in DB
+  return 12;
+}
+
 export async function enqueueCallJobs(params: {
   shop: string;
   enabled: boolean;
   minOrderValue: number;
   callWindowStart: string;
   callWindowEnd: string;
-  delayMinutes: number;
+  delayMinutes?: number;
 }) {
-  const { shop, enabled, minOrderValue, callWindowStart, callWindowEnd, delayMinutes } =
-    params;
-
+  const { shop, enabled, minOrderValue, callWindowStart, callWindowEnd } = params;
   if (!enabled) return { enqueued: 0 };
 
   const settings = await ensureSettings(shop);
-  const maxAttempts = Number(settings.maxAttempts ?? 2);
-  const retryMinutes = Number(settings.retryMinutes ?? 180);
-
-  // avoid re-creating jobs too frequently after a completed call
-  const cooldownMs = Math.max(60, retryMinutes) * 60 * 1000;
-  const completedCutoff = new Date(Date.now() - cooldownMs);
+  const cooldownHours = readCooldownHours(settings as any);
+  const cooldownMs = cooldownHours * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - cooldownMs);
 
   const candidates = await db.checkout.findMany({
     where: {
@@ -244,47 +242,23 @@ export async function enqueueCallJobs(params: {
     const phone = String(c.phone || "").trim();
     if (!phone) continue;
 
-    // 1) never create if there is an active job
-    const active = await db.callJob.findFirst({
+    // COOLDOWN: αν υπάρχει job για αυτό το checkout μέσα στο cooldown window
+    // (οποιοδήποτε status εκτός από CANCELED), δεν ξαναδημιουργείς.
+    const recent = await db.callJob.findFirst({
       where: {
         shop,
         checkoutId: c.checkoutId,
-        status: { in: ["QUEUED", "CALLING"] },
+        createdAt: { gte: cutoff },
+        status: { notIn: ["CANCELED"] },
       },
-      select: { id: true },
+      select: { id: true, status: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
     });
-    if (active) continue;
 
-    // 2) never create if maxAttempts already reached on any job for this checkout
-    const exhausted = await db.callJob.findFirst({
-      where: {
-        shop,
-        checkoutId: c.checkoutId,
-        attempts: { gte: maxAttempts },
-      },
-      select: { id: true },
-    });
-    if (exhausted) continue;
+    if (recent) continue;
 
-    // 3) cooldown after a completed call for this checkout
-    const recentlyCompleted = await db.callJob.findFirst({
-      where: {
-        shop,
-        checkoutId: c.checkoutId,
-        status: "COMPLETED",
-        createdAt: { gte: completedCutoff },
-      },
-      select: { id: true },
-    });
-    if (recentlyCompleted) continue;
-
-    const lead = Math.max(0, Number(delayMinutes ?? 0));
-    const scheduledFor = nextTimeWithinWindow(
-      new Date(),
-      callWindowStart,
-      callWindowEnd,
-      lead
-    );
+    const lead = Math.max(0, Number(params.delayMinutes ?? 0));
+    const scheduledFor = nextTimeWithinWindow(new Date(), callWindowStart, callWindowEnd, lead);
 
     await db.callJob.create({
       data: {
