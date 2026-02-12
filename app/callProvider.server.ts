@@ -143,7 +143,7 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
         },
 
         serverUrl: webhookUrl,
-        serverMessages: ["status-update", "end-of-call-report", "transcript"],
+        serverMessages: ["status-update", "end-of-call-report",  'transcript[transcriptType="final"]',
         metadata: {
           shop: params.shop,
           callJobId: job.id,
