@@ -6,7 +6,7 @@ import { startVapiCallForJob } from "../callProvider.server";
 
 // POST /api/run-calls
 export async function action({ request }: ActionFunctionArgs) {
-  // simple auth gate: require a shared secret header (set in ENV)
+  // Simple auth gate
   const want = process.env.RUN_CALLS_SECRET || "";
   if (want) {
     const got = request.headers.get("x-run-calls-secret") || "";
@@ -15,11 +15,15 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const now = new Date();
 
-  // pull due jobs
+  // === GRACE WINDOW (±2 minutes ahead safe, never misses late jobs) ===
+  const GRACE_MS = 2 * 60 * 1000; // 2 minutes
+  const upper = new Date(now.getTime() + GRACE_MS);
+
+  // Pull due jobs (anything scheduled up to now + 2 minutes)
   const jobs = await db.callJob.findMany({
     where: {
       status: "QUEUED",
-      scheduledFor: { lte: now },
+      scheduledFor: { lte: upper },
     },
     orderBy: { scheduledFor: "asc" },
     take: 25,
@@ -30,7 +34,7 @@ export async function action({ request }: ActionFunctionArgs) {
   let failed = 0;
 
   for (const job of jobs) {
-    // lock (prevent double-processing)
+    // Lock to prevent double processing
     const locked = await db.callJob.updateMany({
       where: { id: job.id, status: "QUEUED" },
       data: {
@@ -38,6 +42,7 @@ export async function action({ request }: ActionFunctionArgs) {
         attempts: { increment: 1 },
       },
     });
+
     if (locked.count === 0) continue;
 
     processed += 1;
@@ -91,7 +96,14 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   return new Response(
-    JSON.stringify({ ok: true, processed, completed, failed }),
+    JSON.stringify({
+      ok: true,
+      now: now.toISOString(),
+      upper: upper.toISOString(),
+      processed,
+      completed,
+      failed,
+    }),
     { status: 200, headers: { "Content-Type": "application/json" } }
   );
 }

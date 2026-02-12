@@ -64,10 +64,7 @@ ${cartText}
   return `${base}\n\nMerchant instructions (must follow):\n${merchant}`.trim();
 }
 
-export async function startVapiCallForJob(params: {
-  shop: string;
-  callJobId: string;
-}) {
+export async function startVapiCallForJob(params: { shop: string; callJobId: string }) {
   const VAPI_API_KEY = requiredEnv("VAPI_API_KEY");
   const VAPI_ASSISTANT_ID = requiredEnv("VAPI_ASSISTANT_ID");
   const VAPI_PHONE_NUMBER_ID = requiredEnv("VAPI_PHONE_NUMBER_ID");
@@ -87,7 +84,7 @@ export async function startVapiCallForJob(params: {
   const settings = await db.settings.findUnique({ where: { shop: params.shop } });
 
   const systemPrompt = buildSystemPrompt({
-    merchantPrompt: settings?.merchantPrompt ?? "",
+    merchantPrompt: (settings as any)?.userPrompt ?? "",
     checkout: {
       checkoutId: checkout.checkoutId,
       customerName: checkout.customerName,
@@ -114,8 +111,6 @@ export async function startVapiCallForJob(params: {
     VAPI_WEBHOOK_SECRET
   )}`;
 
-  // Create phone call (Vapi API)
-  // Endpoint: POST https://api.vapi.ai/call/phone :contentReference[oaicite:1]{index=1}
   const res = await fetch("https://api.vapi.ai/call/phone", {
     method: "POST",
     headers: {
@@ -132,9 +127,8 @@ export async function startVapiCallForJob(params: {
         name: checkout.customerName ?? undefined,
       },
 
-      // ✅ dynamic per-call override
+      // dynamic per-call override (prompt only; assistant stays central)
       assistant: {
-        // Use your single assistant but override model messages on this call
         model: {
           provider: "openai",
           model: "gpt-4o-mini",
@@ -148,7 +142,6 @@ export async function startVapiCallForJob(params: {
           ],
         },
 
-        // ✅ send call events back to your app
         serverUrl: webhookUrl,
         serverMessages: ["status-update", "end-of-call-report", "transcript"],
         metadata: {
@@ -192,8 +185,6 @@ export async function startVapiCallForJob(params: {
   return { ok: true, providerCallId, raw: json };
 }
 
-
-
 export async function createVapiCallForJob(params: { shop: string; callJobId: string }) {
   return startVapiCallForJob(params);
 }
@@ -207,10 +198,5 @@ export async function placeCall(params: {
   amount?: number | null;
   currency?: string | null;
 }) {
-  // εδώ είτε:
-  // 1) δημιουργείς CallJob και καλείς startVapiCallForJob, ή
-  // 2) αν ήδη έχεις job pipeline, απλά κάνε throw για να μη χρησιμοποιείται
   throw new Error("placeCall not wired. Use CallJob pipeline + /api/run-calls.");
 }
-
-

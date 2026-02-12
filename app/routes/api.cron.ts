@@ -1,3 +1,4 @@
+// app/routes/api.cron.ts
 import type { ActionFunctionArgs } from "react-router";
 import db from "../db.server";
 import { ensureSettings, markAbandonedByDelay, enqueueCallJobs } from "../callRecovery.server";
@@ -10,16 +11,25 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   // shops = όλα τα εγκατεστημένα (Settings rows)
-  const shops = (await db.settings.findMany({ select: { shop: true } })).map(x => x.shop);
+  const shops = (await db.settings.findMany({ select: { shop: true } })).map((x) => x.shop);
 
   let markedTotal = 0;
   let enqueuedTotal = 0;
+
+  // Useful debug counts
+  let queuedDueBefore = 0;
+  let queuedDueAfter = 0;
+
+  const nowBefore = new Date();
+  queuedDueBefore = await db.callJob.count({
+    where: { status: "QUEUED", scheduledFor: { lte: nowBefore } },
+  });
 
   for (const shop of shops) {
     const settings = await ensureSettings(shop);
 
     const marked = await markAbandonedByDelay(shop, settings.delayMinutes);
-    markedTotal += marked.count ?? 0;
+    markedTotal += (marked as any)?.count ?? 0;
 
     const enq = await enqueueCallJobs({
       shop,
@@ -27,26 +37,59 @@ export async function action({ request }: ActionFunctionArgs) {
       minOrderValue: settings.minOrderValue,
       callWindowStart: (settings as any).callWindowStart ?? "09:00",
       callWindowEnd: (settings as any).callWindowEnd ?? "19:00",
-    });
+      delayMinutes: settings.delayMinutes, // ✅ critical
+    } as any);
 
-    enqueuedTotal += enq.enqueued ?? 0;
+    enqueuedTotal += (enq as any)?.enqueued ?? 0;
   }
 
-  // Τρέξε calls με το υπάρχον endpoint σου (/api/run-calls)
-  const appUrl = (process.env.APP_URL || "").replace(/\/$/, "");
-  if (appUrl) {
-    await fetch(`${appUrl}/api/run-calls`, {
+  const nowAfter = new Date();
+  queuedDueAfter = await db.callJob.count({
+    where: { status: "QUEUED", scheduledFor: { lte: nowAfter } },
+  });
+
+  // Run calls via existing endpoint (/api/run-calls) and SURFACE RESULT
+  let runCallsStatus: number | null = null;
+  let runCallsBody: any = null;
+
+  const appUrl = String(process.env.APP_URL || "").replace(/\/$/, "");
+  if (!appUrl) {
+    runCallsBody = { error: "Missing APP_URL env" };
+  } else {
+    const res = await fetch(`${appUrl}/api/run-calls`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-run-calls-secret": process.env.RUN_CALLS_SECRET || "",
       },
       body: JSON.stringify({}),
-    }).catch(() => null);
+    });
+
+    runCallsStatus = res.status;
+
+    const text = await res.text().catch(() => "");
+    try {
+      runCallsBody = text ? JSON.parse(text) : null;
+    } catch {
+      runCallsBody = { raw: text };
+    }
   }
 
-  return new Response(JSON.stringify({ ok: true, shops: shops.length, markedTotal, enqueuedTotal }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      shops: shops.length,
+      markedTotal,
+      enqueuedTotal,
+      queuedDueBefore,
+      queuedDueAfter,
+      runCallsStatus,
+      runCallsBody,
+      serverNow: new Date().toISOString(),
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }
+  );
 }
