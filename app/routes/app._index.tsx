@@ -15,6 +15,48 @@ import {
 } from "../callRecovery.server";
 import { createVapiCallForJob } from "../callProvider.server";
 
+type Row = {
+  id: string;
+  checkoutId: string;
+  status: string;
+  scheduledFor: string;
+  createdAt: string;
+  attempts: number;
+
+  customerName?: string | null;
+  cartPreview?: string | null;
+
+  // raw fields
+  providerCallId?: string | null;
+  recordingUrl?: string | null;
+  endedReason?: string | null;
+  transcript?: string | null;
+
+  sentiment?: string | null;
+  tagsCsv?: string | null;
+  reason?: string | null;
+  nextAction?: string | null;
+  followUp?: string | null;
+  analysisJson?: string | null;
+
+  outcome?: string | null;
+
+  // derived UI
+  answered: "answered" | "no_answer" | "unknown";
+  disposition:
+    | "interested"
+    | "needs_support"
+    | "call_back_later"
+    | "not_interested"
+    | "wrong_number"
+    | "unknown";
+  buyProbability: number | null; // 0..1
+  churnProbability: number | null; // 0..1
+  tags: string[];
+  summaryReason: string | null;
+  summaryNextAction: string | null;
+};
+
 type LoaderData = {
   shop: string;
   currency: string;
@@ -25,34 +67,7 @@ type LoaderData = {
     queuedCalls: number;
     completedCalls7d: number;
   };
-  recentJobs: Array<{
-    id: string;
-    checkoutId: string;
-    status: string;
-    scheduledFor: string;
-    attempts: number;
-    createdAt: string;
-
-    customerName?: string | null;
-    cartPreview?: string | null;
-
-    // provider + details
-    providerCallId?: string | null;
-    recordingUrl?: string | null;
-    endedReason?: string | null;
-    transcript?: string | null;
-
-    // structured analysis (preferred)
-    sentiment?: string | null;
-    tagsCsv?: string | null;
-    reason?: string | null;
-    nextAction?: string | null;
-    followUp?: string | null;
-    analysisJson?: string | null;
-
-    // legacy
-    outcome?: string | null;
-  }>;
+  recentJobs: Row[];
 };
 
 function buildCartPreview(itemsJson?: string | null): string | null {
@@ -82,9 +97,49 @@ function isVapiConfiguredFromEnv() {
   return Boolean(apiKey) && Boolean(assistantId) && Boolean(phoneNumberId);
 }
 
+function formatWhen(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString();
+}
+
+function clamp01(n: number) {
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
+function stripFences(s: string) {
+  const t = String(s ?? "").trim();
+  if (!t) return "";
+  if (t.startsWith("```")) return t.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
+  return t;
+}
+
+function tryParseJsonObject(s: string): any | null {
+  const raw = stripFences(String(s ?? "").trim());
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") return parsed;
+    return null;
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      const chunk = raw.slice(start, end + 1);
+      try {
+        const parsed2 = JSON.parse(chunk);
+        if (parsed2 && typeof parsed2 === "object") return parsed2;
+      } catch {}
+    }
+    return null;
+  }
+}
+
 function cleanSentiment(v?: string | null) {
   const s = String(v ?? "").trim().toLowerCase();
-  if (s === "positive" || s === "neutral" || s === "negative") return s;
+  if (s === "positive" || s === "neutral" || s === "negative") return s as any;
   return null;
 }
 
@@ -98,18 +153,100 @@ function splitTags(csv?: string | null): string[] {
     .slice(0, 12);
 }
 
-function formatWhen(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString();
+function normalizeTag(t: string) {
+  return String(t ?? "").trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40);
 }
 
-// ---------------- UI primitives ----------------
+function deriveFromJob(j: any): Pick<
+  Row,
+  "answered" | "disposition" | "buyProbability" | "churnProbability" | "tags" | "summaryReason" | "summaryNextAction"
+> {
+  const aj = j.analysisJson ? tryParseJsonObject(j.analysisJson) : null;
+  const fromReason = !aj && j.reason ? tryParseJsonObject(j.reason) : null;
+  const fromOutcome = !aj && !fromReason && j.outcome ? tryParseJsonObject(j.outcome) : null;
+  const obj = aj ?? fromReason ?? fromOutcome;
 
-function Pill(props: {
-  children: any;
-  tone?: "neutral" | "green" | "blue" | "amber" | "red";
-}) {
+  const sentiment = cleanSentiment(obj?.sentiment ?? j.sentiment);
+  const rawTags: string[] = Array.isArray(obj?.tags)
+    ? obj.tags.map((x: any) => normalizeTag(x)).filter(Boolean).slice(0, 12)
+    : splitTags(j.tagsCsv).map(normalizeTag).filter(Boolean).slice(0, 12);
+
+  const reason =
+    typeof obj?.reason === "string" && obj.reason.trim()
+      ? obj.reason.trim()
+      : j.reason && !tryParseJsonObject(j.reason)
+        ? String(j.reason).trim()
+        : null;
+
+  const nextAction =
+    typeof obj?.nextAction === "string" && obj.nextAction.trim()
+      ? obj.nextAction.trim()
+      : j.nextAction
+        ? String(j.nextAction).trim()
+        : null;
+
+  // Answered heuristic (Vapi endedReason patterns)
+  const ended = String(j.endedReason ?? "").toLowerCase();
+  const answered: Row["answered"] =
+    ended.includes("customer-ended") || ended.includes("connected") || ended.includes("human")
+      ? "answered"
+      : ended.includes("no-answer") || ended.includes("voicemail") || ended.includes("busy") || ended.includes("failed")
+        ? "no_answer"
+        : "unknown";
+
+  // Disposition heuristic from tags
+  const has = (t: string) => rawTags.includes(t);
+  const disposition: Row["disposition"] =
+    has("wrong_number") ? "wrong_number" :
+    has("not_interested") ? "not_interested" :
+    has("call_back_later") ? "call_back_later" :
+    has("needs_support") ? "needs_support" :
+    sentiment === "positive" ? "interested" :
+    "unknown";
+
+  // Buy probability heuristic
+  let p =
+    sentiment === "positive" ? 0.75 :
+    sentiment === "neutral" ? 0.45 :
+    sentiment === "negative" ? 0.15 :
+    0.35;
+
+  if (has("call_back_later")) p += 0.10;
+  if (has("needs_support")) p += 0.05;
+  if (has("coupon_request")) p += 0.08;
+  if (has("shipping")) p -= 0.05;
+  if (has("price")) p -= 0.10;
+  if (has("trust")) p -= 0.12;
+  if (has("not_interested")) p -= 0.35;
+  if (has("wrong_number")) p -= 0.60;
+
+  // If not answered, chance drops
+  if (answered === "no_answer") p -= 0.20;
+
+  p = clamp01(p);
+
+  // Churn probability (risk of losing) heuristic
+  let c = 1 - p;
+  if (has("not_interested")) c = clamp01(c + 0.15);
+  if (has("wrong_number")) c = 1;
+  if (has("call_back_later")) c = clamp01(c - 0.08);
+  if (sentiment === "positive") c = clamp01(c - 0.10);
+
+  const buyProbability = Number.isFinite(p) ? p : null;
+  const churnProbability = Number.isFinite(c) ? c : null;
+
+  return {
+    answered,
+    disposition,
+    buyProbability,
+    churnProbability,
+    tags: rawTags,
+    summaryReason: reason,
+    summaryNextAction: nextAction,
+  };
+}
+
+function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red" }) {
   const tone = props.tone ?? "neutral";
   const t =
     tone === "green"
@@ -132,7 +269,7 @@ function Pill(props: {
         border: `1px solid ${t.bd}`,
         background: t.bg,
         color: t.tx,
-        fontWeight: 800,
+        fontWeight: 900,
         fontSize: 12,
         whiteSpace: "nowrap",
       }}
@@ -153,10 +290,34 @@ function StatusPill({ status }: { status: string }) {
   return <Pill tone={tone as any}>{s}</Pill>;
 }
 
-function SentimentPill({ sentiment }: { sentiment: "positive" | "neutral" | "negative" }) {
-  const tone = sentiment === "positive" ? "green" : sentiment === "negative" ? "red" : "neutral";
-  const label = sentiment === "positive" ? "Positive" : sentiment === "negative" ? "Negative" : "Neutral";
-  return <Pill tone={tone as any}>{label}</Pill>;
+function AnsweredPill({ answered }: { answered: Row["answered"] }) {
+  if (answered === "answered") return <Pill tone="green">Answered</Pill>;
+  if (answered === "no_answer") return <Pill tone="amber">No answer</Pill>;
+  return <Pill>Unknown</Pill>;
+}
+
+function DispositionPill({ d }: { d: Row["disposition"] }) {
+  if (d === "interested") return <Pill tone="green">Interested</Pill>;
+  if (d === "needs_support") return <Pill tone="blue">Needs support</Pill>;
+  if (d === "call_back_later") return <Pill tone="amber">Call back</Pill>;
+  if (d === "not_interested") return <Pill tone="red">Not interested</Pill>;
+  if (d === "wrong_number") return <Pill tone="red">Wrong number</Pill>;
+  return <Pill>Unknown</Pill>;
+}
+
+function PercentPill({ label, value, tone }: { label: string; value: number | null; tone?: any }) {
+  if (value == null) return <Pill>—</Pill>;
+  const pct = Math.round(value * 100);
+  return <Pill tone={tone}>{label} {pct}%</Pill>;
+}
+
+function ColumnHeader(props: { title: string; subtitle: string }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 2, lineHeight: 1.1 }}>
+      <div style={{ fontWeight: 900 }}>{props.title}</div>
+      <div style={{ fontSize: 11, fontWeight: 800, color: "rgba(0,0,0,0.55)" }}>{props.subtitle}</div>
+    </div>
+  );
 }
 
 function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "ghost" }) {
@@ -167,314 +328,17 @@ function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { ton
     border: "1px solid rgba(0,0,0,0.14)",
     background: "white",
     cursor: "pointer",
-    fontWeight: 800,
+    fontWeight: 900,
     fontSize: 12,
     lineHeight: 1,
   };
-
   const styles =
     tone === "primary"
-      ? {
-          ...base,
-          border: "1px solid rgba(59,130,246,0.30)",
-          background: "rgba(59,130,246,0.08)",
-        }
+      ? { ...base, border: "1px solid rgba(59,130,246,0.30)", background: "rgba(59,130,246,0.08)" }
       : base;
-
   const { tone: _tone, style, ...rest } = props as any;
   return <button {...rest} style={{ ...styles, ...(style ?? {}) }} />;
 }
-
-function KeyValueRow(props: { label: string; value: any }) {
-  if (!props.value) return null;
-  return (
-    <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
-      <div style={{ width: 110, fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.55)" }}>
-        {props.label}
-      </div>
-      <div style={{ fontSize: 13, color: "rgba(0,0,0,0.82)", lineHeight: 1.45, flex: 1 }}>
-        {props.value}
-      </div>
-    </div>
-  );
-}
-
-// ---------------- Robust analysis extraction ----------------
-
-// Vapi/OpenAI sometimes returns fenced JSON (` ```json {...} ``` `) or plain JSON string.
-// This normalizes it, parses when possible, and returns structured fields.
-function stripFences(s: string) {
-  const t = s.trim();
-  if (t.startsWith("```")) {
-    return t.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
-  }
-  return t;
-}
-
-function tryParseJsonObject(s: string): any | null {
-  const raw = stripFences(String(s ?? "").trim());
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") return parsed;
-    return null;
-  } catch {
-    // Try to salvage: find first { ... } block
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      const chunk = raw.slice(start, end + 1);
-      try {
-        const parsed2 = JSON.parse(chunk);
-        if (parsed2 && typeof parsed2 === "object") return parsed2;
-      } catch {}
-    }
-    return null;
-  }
-}
-
-function deriveSummary(j: LoaderData["recentJobs"][number]) {
-  // Priority: analysisJson
-  const aj = j.analysisJson ? tryParseJsonObject(j.analysisJson) : null;
-
-  // Fallback: if reason/outcome contains JSON blob (your screenshot), parse it.
-  const fromReason = !aj && j.reason ? tryParseJsonObject(j.reason) : null;
-  const fromOutcome = !aj && !fromReason && j.outcome ? tryParseJsonObject(j.outcome) : null;
-
-  const obj = aj ?? fromReason ?? fromOutcome;
-
-  const sentiment = cleanSentiment(obj?.sentiment ?? j.sentiment);
-  const tags =
-    Array.isArray(obj?.tags)
-      ? obj.tags.map((x: any) => String(x ?? "").trim()).filter(Boolean).slice(0, 12)
-      : splitTags(j.tagsCsv);
-
-  const reason =
-    (typeof obj?.reason === "string" && obj.reason.trim()) ? obj.reason.trim() :
-    (j.reason && !tryParseJsonObject(j.reason) ? j.reason : null);
-
-  const nextAction =
-    (typeof obj?.nextAction === "string" && obj.nextAction.trim()) ? obj.nextAction.trim() :
-    (j.nextAction ?? null);
-
-  const followUp =
-    (typeof obj?.followUp === "string" && obj.followUp.trim()) ? obj.followUp.trim() :
-    (j.followUp ?? null);
-
-  const confidence =
-    typeof obj?.confidence === "number" && Number.isFinite(obj.confidence)
-      ? Math.max(0, Math.min(1, obj.confidence))
-      : null;
-
-  return { sentiment, tags, reason, nextAction, followUp, confidence };
-}
-
-function ConfidenceBar({ value }: { value: number }) {
-  const pct = Math.round(value * 100);
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      <div
-        style={{
-          height: 8,
-          width: 120,
-          borderRadius: 999,
-          background: "rgba(0,0,0,0.08)",
-          overflow: "hidden",
-          border: "1px solid rgba(0,0,0,0.10)",
-        }}
-      >
-        <div
-          style={{
-            height: "100%",
-            width: `${pct}%`,
-            background: "rgba(59,130,246,0.55)",
-          }}
-        />
-      </div>
-      <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.60)" }}>{pct}%</div>
-    </div>
-  );
-}
-
-function SummaryDrawer({ job }: { job: LoaderData["recentJobs"][number] }) {
-  const s = deriveSummary(job);
-
-  const copy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {}
-  };
-
-  const status = String(job.status || "").toUpperCase();
-
-  const headline =
-    status === "COMPLETED" ? "Call summary" :
-    status === "CALLING" ? "Call in progress" :
-    status === "QUEUED" ? "Queued" :
-    status === "FAILED" ? "Failed" :
-    "Details";
-
-  const subline =
-    status === "QUEUED"
-      ? `Scheduled for ${formatWhen(job.scheduledFor)}`
-      : status === "CALLING"
-        ? "Waiting for end-of-call report"
-        : status === "FAILED"
-          ? "Provider error or max attempts reached"
-          : `Created at ${formatWhen(job.createdAt)}`;
-
-  const hasStructured =
-    Boolean(s.sentiment) || Boolean(s.tags.length) || Boolean(s.reason) || Boolean(s.nextAction) || Boolean(s.followUp);
-
-  return (
-    <details
-      style={{
-        borderRadius: 14,
-        border: "1px solid rgba(0,0,0,0.10)",
-        background: "white",
-        overflow: "hidden",
-        minWidth: 420,
-      }}
-    >
-      <summary
-        style={{
-          listStyle: "none",
-          cursor: "pointer",
-          padding: "10px 12px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 10,
-          background: "rgba(0,0,0,0.02)",
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <div style={{ fontSize: 13, fontWeight: 900 }}>{headline}</div>
-          <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(0,0,0,0.55)" }}>{subline}</div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {status === "COMPLETED" && s.sentiment ? <SentimentPill sentiment={s.sentiment as any} /> : null}
-          {status === "COMPLETED" && s.tags.length ? <Pill>{s.tags.length} tags</Pill> : null}
-          <SoftButton type="button">Open</SoftButton>
-        </div>
-      </summary>
-
-      <div style={{ padding: 12, display: "grid", gap: 12 }}>
-        {status === "COMPLETED" && s.confidence != null ? (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.55)" }}>Confidence</div>
-            <ConfidenceBar value={s.confidence} />
-          </div>
-        ) : null}
-
-        {status === "COMPLETED" && s.tags.length ? (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {s.tags.map((t) => (
-              <Pill key={t}>{t}</Pill>
-            ))}
-          </div>
-        ) : null}
-
-        {status === "COMPLETED" && hasStructured ? (
-          <div style={{ display: "grid", gap: 10 }}>
-            <KeyValueRow label="What happened" value={s.reason ? String(s.reason) : "—"} />
-
-            {s.nextAction ? (
-              <div
-                style={{
-                  borderRadius: 12,
-                  border: "1px solid rgba(59,130,246,0.22)",
-                  background: "rgba(59,130,246,0.06)",
-                  padding: 10,
-                }}
-              >
-                <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.55)", marginBottom: 6 }}>
-                  Recommended next action
-                </div>
-                <div style={{ fontSize: 13, fontWeight: 900, color: "rgba(0,0,0,0.85)", lineHeight: 1.45 }}>
-                  {String(s.nextAction)}
-                </div>
-              </div>
-            ) : null}
-
-            {s.followUp ? (
-              <div>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.55)" }}>
-                    Suggested follow-up
-                  </div>
-                  <SoftButton type="button" onClick={() => copy(String(s.followUp))}>
-                    Copy
-                  </SoftButton>
-                </div>
-                <div
-                  style={{
-                    marginTop: 8,
-                    borderRadius: 12,
-                    border: "1px solid rgba(0,0,0,0.10)",
-                    background: "rgba(0,0,0,0.03)",
-                    padding: 10,
-                    fontSize: 13,
-                    color: "rgba(0,0,0,0.82)",
-                    whiteSpace: "pre-wrap",
-                    lineHeight: 1.45,
-                  }}
-                >
-                  {String(s.followUp)}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: 12, display: "grid", gap: 10 }}>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              {job.recordingUrl ? (
-                <a href={String(job.recordingUrl)} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-                  <SoftButton type="button" tone="primary">Recording</SoftButton>
-                </a>
-              ) : null}
-              {job.providerCallId ? <Pill>Call ID: {String(job.providerCallId).slice(0, 10)}…</Pill> : null}
-              {job.endedReason ? <Pill>{String(job.endedReason)}</Pill> : null}
-            </div>
-
-            {job.transcript ? (
-              <SoftButton type="button" onClick={() => copy(String(job.transcript))}>Copy transcript</SoftButton>
-            ) : null}
-          </div>
-
-          {job.transcript ? (
-            <pre
-              style={{
-                margin: 0,
-                borderRadius: 12,
-                border: "1px solid rgba(0,0,0,0.10)",
-                background: "rgba(0,0,0,0.03)",
-                padding: 10,
-                fontSize: 12,
-                color: "rgba(0,0,0,0.82)",
-                whiteSpace: "pre-wrap",
-                lineHeight: 1.45,
-                maxHeight: 220,
-                overflow: "auto",
-              }}
-            >
-              {String(job.transcript)}
-            </pre>
-          ) : (
-            <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(0,0,0,0.55)" }}>
-              Transcript not available.
-            </div>
-          )}
-        </div>
-      </div>
-    </details>
-  );
-}
-
-// ---------------- loader/action ----------------
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -546,6 +410,37 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const cMap = new Map(related.map((c) => [c.checkoutId, c]));
   const potentialRevenue7d = Number(potentialAgg._sum.value ?? 0);
 
+  const rows: Row[] = recentJobs.map((j: any) => {
+    const c = cMap.get(j.checkoutId);
+    const derived = deriveFromJob(j);
+    return {
+      id: j.id,
+      checkoutId: j.checkoutId,
+      status: j.status,
+      scheduledFor: j.scheduledFor.toISOString(),
+      createdAt: j.createdAt.toISOString(),
+      attempts: j.attempts,
+
+      customerName: c?.customerName ?? null,
+      cartPreview: buildCartPreview(c?.itemsJson ?? null),
+
+      providerCallId: j.providerCallId ?? null,
+      recordingUrl: j.recordingUrl ?? null,
+      endedReason: j.endedReason ?? null,
+      transcript: j.transcript ?? null,
+
+      sentiment: j.sentiment ?? null,
+      tagsCsv: j.tagsCsv ?? null,
+      reason: j.reason ?? null,
+      nextAction: j.nextAction ?? null,
+      followUp: j.followUp ?? null,
+      analysisJson: j.analysisJson ?? null,
+      outcome: j.outcome ?? null,
+
+      ...derived,
+    };
+  });
+
   return {
     shop,
     currency: settings.currency || "USD",
@@ -556,16 +451,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       queuedCalls,
       completedCalls7d,
     },
-    recentJobs: recentJobs.map((j) => {
-      const c = cMap.get(j.checkoutId);
-      return {
-        ...j,
-        scheduledFor: j.scheduledFor.toISOString(),
-        createdAt: j.createdAt.toISOString(),
-        customerName: c?.customerName ?? null,
-        cartPreview: buildCartPreview(c?.itemsJson ?? null),
-      };
-    }),
+    recentJobs: rows,
   } satisfies LoaderData;
 };
 
@@ -585,11 +471,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const now = new Date();
     const jobs = await db.callJob.findMany({
-      where: {
-        shop,
-        status: "QUEUED",
-        scheduledFor: { lte: now },
-      },
+      where: { shop, status: "QUEUED", scheduledFor: { lte: now } },
       orderBy: { scheduledFor: "asc" },
       take: 10,
     });
@@ -604,16 +486,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           outcome: null,
         },
       });
-
       if (locked.count === 0) continue;
 
       if (!vapiOk) {
         await db.callJob.update({
           where: { id: job.id },
-          data: {
-            status: "COMPLETED",
-            outcome: `SIMULATED_CALL_OK phone=${job.phone}`,
-          },
+          data: { status: "COMPLETED", outcome: `SIMULATED_CALL_OK phone=${job.phone}` },
         });
         continue;
       }
@@ -718,6 +596,12 @@ export default function Dashboard() {
       maximumFractionDigits: 2,
     }).format(n);
 
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {}
+  };
+
   return (
     <s-page heading="Checkout Call Recovery AI">
       <s-paragraph>
@@ -730,7 +614,7 @@ export default function Dashboard() {
             <s-stack gap="tight">
               <s-text as="h3" variant="headingSm">Abandoned checkouts</s-text>
               <s-text as="p" variant="headingLg">{stats.abandonedCount7d}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Last 7 days (DB)</s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">Count in last 7 days</s-text>
             </s-stack>
           </s-card>
 
@@ -738,7 +622,7 @@ export default function Dashboard() {
             <s-stack gap="tight">
               <s-text as="h3" variant="headingSm">Potential revenue</s-text>
               <s-text as="p" variant="headingLg">{money(stats.potentialRevenue7d)}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Last 7 days (DB)</s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">Sum of abandoned carts</s-text>
             </s-stack>
           </s-card>
 
@@ -754,7 +638,7 @@ export default function Dashboard() {
             <s-stack gap="tight">
               <s-text as="h3" variant="headingSm">Completed calls</s-text>
               <s-text as="p" variant="headingLg">{stats.completedCalls7d}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Last 7 days (DB)</s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">Finished in last 7 days</s-text>
             </s-stack>
           </s-card>
         </s-inline-grid>
@@ -773,7 +657,7 @@ export default function Dashboard() {
                   border: "1px solid rgba(0,0,0,0.12)",
                   background: "white",
                   cursor: "pointer",
-                  fontWeight: 700,
+                  fontWeight: 900,
                 }}
               >
                 Run queued jobs
@@ -782,7 +666,7 @@ export default function Dashboard() {
 
             <s-text as="p" tone="subdued">
               {vapiConfigured
-                ? "Creates real Vapi calls for due queued jobs."
+                ? "Runs due queued jobs now (real Vapi calls)."
                 : "Vapi not configured in ENV. Button will simulate calls."}
             </s-text>
           </s-stack>
@@ -795,14 +679,48 @@ export default function Dashboard() {
             <s-table>
               <s-table-head>
                 <s-table-row>
-                  <s-table-header-cell>Checkout</s-table-header-cell>
-                  <s-table-header-cell>Customer</s-table-header-cell>
-                  <s-table-header-cell>Cart</s-table-header-cell>
-                  <s-table-header-cell>Status</s-table-header-cell>
-                  <s-table-header-cell>Scheduled</s-table-header-cell>
-                  <s-table-header-cell>Attempts</s-table-header-cell>
-                  <s-table-header-cell>Summary</s-table-header-cell>
-                  <s-table-header-cell>Manual</s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Checkout" subtitle="Abandoned checkout ID" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Customer" subtitle="Name (if available)" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Cart" subtitle="Top items preview" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Status" subtitle="Pipeline state" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Timing" subtitle="Scheduled / created" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Attempts" subtitle="Times dialed" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Answered" subtitle="Customer picked up" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Disposition" subtitle="Outcome category" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Buy chance" subtitle="Estimated conversion" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Churn risk" subtitle="Risk of losing" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Next action" subtitle="What to do now" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Tags" subtitle="Detected topics" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Tools" subtitle="Recording / transcript" />
+                  </s-table-header-cell>
+                  <s-table-header-cell>
+                    <ColumnHeader title="Manual" subtitle="Call now (queued)" />
+                  </s-table-header-cell>
                 </s-table-row>
               </s-table-head>
 
@@ -810,20 +728,105 @@ export default function Dashboard() {
                 {recentJobs.map((j) => (
                   <s-table-row key={j.id}>
                     <s-table-cell>{j.checkoutId}</s-table-cell>
+
                     <s-table-cell>{j.customerName ?? "-"}</s-table-cell>
-                    <s-table-cell>{j.cartPreview ?? "-"}</s-table-cell>
+
+                    <s-table-cell title={j.cartPreview ?? ""}>
+                      <span style={{ display: "inline-block", maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {j.cartPreview ?? "-"}
+                      </span>
+                    </s-table-cell>
 
                     <s-table-cell>
                       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                         <StatusPill status={j.status} />
+                        {cleanSentiment(j.sentiment) ? (
+                          <Pill>
+                            {String(cleanSentiment(j.sentiment)).toUpperCase()}
+                          </Pill>
+                        ) : null}
                       </div>
                     </s-table-cell>
 
-                    <s-table-cell>{formatWhen(j.scheduledFor)}</s-table-cell>
+                    <s-table-cell>
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.65)" }}>
+                          Scheduled: {formatWhen(j.scheduledFor)}
+                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(0,0,0,0.45)" }}>
+                          Created: {formatWhen(j.createdAt)}
+                        </div>
+                      </div>
+                    </s-table-cell>
+
                     <s-table-cell>{j.attempts}</s-table-cell>
 
                     <s-table-cell>
-                      <SummaryDrawer job={j} />
+                      <AnsweredPill answered={j.answered} />
+                    </s-table-cell>
+
+                    <s-table-cell>
+                      <DispositionPill d={j.disposition} />
+                    </s-table-cell>
+
+                    <s-table-cell>
+                      <PercentPill label="" value={j.buyProbability} tone="green" />
+                    </s-table-cell>
+
+                    <s-table-cell>
+                      <PercentPill label="" value={j.churnProbability} tone="red" />
+                    </s-table-cell>
+
+                    <s-table-cell title={j.summaryNextAction ?? ""}>
+                      {j.summaryNextAction ? (
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <Pill tone="blue">Next</Pill>
+                          <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,0.70)", maxWidth: 260 }}>
+                            <span style={{ display: "inline-block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 }}>
+                              {j.summaryNextAction}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <Pill>—</Pill>
+                      )}
+                    </s-table-cell>
+
+                    <s-table-cell>
+                      {j.tags.length ? (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxWidth: 220 }}>
+                          {j.tags.slice(0, 4).map((t) => (
+                            <Pill key={t}>{t}</Pill>
+                          ))}
+                          {j.tags.length > 4 ? <Pill>+{j.tags.length - 4}</Pill> : null}
+                        </div>
+                      ) : (
+                        <Pill>—</Pill>
+                      )}
+                    </s-table-cell>
+
+                    <s-table-cell>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {j.recordingUrl ? (
+                          <a href={String(j.recordingUrl)} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                            <SoftButton type="button" tone="primary">Recording</SoftButton>
+                          </a>
+                        ) : (
+                          <SoftButton type="button" disabled style={{ opacity: 0.5, cursor: "not-allowed" }}>
+                            Recording
+                          </SoftButton>
+                        )}
+
+                        {j.transcript ? (
+                          <SoftButton type="button" onClick={() => copy(String(j.transcript))}>
+                            Copy transcript
+                          </SoftButton>
+                        ) : (
+                          <SoftButton type="button" disabled style={{ opacity: 0.5, cursor: "not-allowed" }}>
+                            Copy transcript
+                          </SoftButton>
+                        )}
+                      </div>
                     </s-table-cell>
 
                     <s-table-cell>
@@ -839,7 +842,7 @@ export default function Dashboard() {
                             border: "1px solid rgba(0,0,0,0.12)",
                             background: j.status === "QUEUED" ? "white" : "#f3f3f3",
                             cursor: j.status === "QUEUED" ? "pointer" : "not-allowed",
-                            fontWeight: 700,
+                            fontWeight: 900,
                           }}
                         >
                           Call now
