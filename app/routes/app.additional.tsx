@@ -1,10 +1,15 @@
 // app/routes/app.additional.tsx
+import * as React from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Form, useLoaderData, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
 import { ensureSettings } from "../callRecovery.server";
+
+type Tone = "neutral" | "friendly" | "premium" | "urgent";
+type Goal = "complete_checkout" | "qualify_and_follow_up" | "support_only";
+type OfferRule = "ask_only" | "price_objection" | "after_first_objection" | "always";
 
 type LoaderData = {
   shop: string;
@@ -18,15 +23,15 @@ type LoaderData = {
     callWindowStart: string;
     callWindowEnd: string;
 
-    // upgraded playbook fields (stored in settings table via Supabase SQL)
-    tone: "neutral" | "friendly" | "premium" | "urgent";
-    goal: "complete_checkout" | "qualify_and_follow_up" | "support_only";
+    // upgraded playbook fields (stored in Settings table via Supabase SQL)
+    tone: Tone;
+    goal: Goal;
     maxCallSeconds: number;
     maxFollowupQuestions: number;
 
     discountEnabled: boolean;
     maxDiscountPercent: number;
-    offerRule: "ask_only" | "price_objection" | "after_first_objection" | "always";
+    offerRule: OfferRule;
     minCartValueForDiscount: number | null;
     couponPrefix: string | null;
     couponValidityHours: number;
@@ -66,22 +71,107 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-function pickTone(v: any): LoaderData["settings"]["tone"] {
+function pickTone(v: any): Tone {
   const s = String(v ?? "").trim().toLowerCase();
-  if (s === "friendly" || s === "premium" || s === "urgent" || s === "neutral") return s as any;
+  if (s === "friendly" || s === "premium" || s === "urgent" || s === "neutral") return s as Tone;
   return "neutral";
 }
 
-function pickGoal(v: any): LoaderData["settings"]["goal"] {
+function pickGoal(v: any): Goal {
   const s = String(v ?? "").trim().toLowerCase();
-  if (s === "qualify_and_follow_up" || s === "support_only" || s === "complete_checkout") return s as any;
+  if (s === "qualify_and_follow_up" || s === "support_only" || s === "complete_checkout") return s as Goal;
   return "complete_checkout";
 }
 
-function pickOfferRule(v: any): LoaderData["settings"]["offerRule"] {
+function pickOfferRule(v: any): OfferRule {
   const s = String(v ?? "").trim().toLowerCase();
-  if (s === "price_objection" || s === "after_first_objection" || s === "always" || s === "ask_only") return s as any;
+  if (s === "price_objection" || s === "after_first_objection" || s === "always" || s === "ask_only") return s as OfferRule;
   return "ask_only";
+}
+
+function pickCurrency(v: any): string {
+  const s = String(v ?? "").trim().toUpperCase();
+  if (s === "USD" || s === "EUR" || s === "GBP") return s;
+  return "USD";
+}
+
+type ExtrasRow = {
+  tone: string | null;
+  goal: string | null;
+  max_call_seconds: number | null;
+  max_followup_questions: number | null;
+
+  discount_enabled: boolean | null;
+  max_discount_percent: number | null;
+  offer_rule: string | null;
+  min_cart_value_for_discount: number | null;
+  coupon_prefix: string | null;
+  coupon_validity_hours: number | null;
+  free_shipping_enabled: boolean | null;
+
+  followup_email_enabled: boolean | null;
+  followup_sms_enabled: boolean | null;
+};
+
+async function readSettingsExtras(shop: string): Promise<ExtrasRow | null> {
+  const rows = await (db as any).$queryRaw<ExtrasRow[]>`
+    select
+      tone,
+      goal,
+      max_call_seconds,
+      max_followup_questions,
+      discount_enabled,
+      max_discount_percent,
+      offer_rule,
+      min_cart_value_for_discount,
+      coupon_prefix,
+      coupon_validity_hours,
+      free_shipping_enabled,
+      followup_email_enabled,
+      followup_sms_enabled
+    from public."Settings"
+    where shop = ${shop}
+    limit 1
+  `;
+  return rows?.[0] ?? null;
+}
+
+async function writeSettingsExtras(shop: string, data: {
+  tone: Tone;
+  goal: Goal;
+  maxCallSeconds: number;
+  maxFollowupQuestions: number;
+
+  discountEnabled: boolean;
+  maxDiscountPercent: number;
+  offerRule: OfferRule;
+  minCartValueForDiscount: number | null;
+  couponPrefix: string | null;
+  couponValidityHours: number;
+  freeShippingEnabled: boolean;
+
+  followupEmailEnabled: boolean;
+  followupSmsEnabled: boolean;
+}) {
+  // IMPORTANT: table name is "Settings" (capital S). Keep quoted.
+  await (db as any).$executeRaw`
+    update public."Settings"
+    set
+      tone = ${data.tone},
+      goal = ${data.goal},
+      max_call_seconds = ${data.maxCallSeconds},
+      max_followup_questions = ${data.maxFollowupQuestions},
+      discount_enabled = ${data.discountEnabled},
+      max_discount_percent = ${data.maxDiscountPercent},
+      offer_rule = ${data.offerRule},
+      min_cart_value_for_discount = ${data.minCartValueForDiscount},
+      coupon_prefix = ${data.couponPrefix},
+      coupon_validity_hours = ${data.couponValidityHours},
+      free_shipping_enabled = ${data.freeShippingEnabled},
+      followup_email_enabled = ${data.followupEmailEnabled},
+      followup_sms_enabled = ${data.followupSmsEnabled}
+    where shop = ${shop}
+  `;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -89,8 +179,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = session.shop;
 
   const settings = await ensureSettings(shop);
-
   const s: any = settings as any;
+
+  const extras = await readSettingsExtras(shop);
 
   return {
     shop,
@@ -104,22 +195,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       callWindowStart: s.callWindowStart ?? "09:00",
       callWindowEnd: s.callWindowEnd ?? "19:00",
 
-      tone: pickTone(s.tone),
-      goal: pickGoal(s.goal),
-      maxCallSeconds: clamp(Number(s.maxCallSeconds ?? 120), 45, 300),
-      maxFollowupQuestions: clamp(Number(s.maxFollowupQuestions ?? 1), 0, 3),
+      tone: pickTone(extras?.tone ?? "neutral"),
+      goal: pickGoal(extras?.goal ?? "complete_checkout"),
+      maxCallSeconds: clamp(Number(extras?.max_call_seconds ?? 120), 45, 300),
+      maxFollowupQuestions: clamp(Number(extras?.max_followup_questions ?? 1), 0, 3),
 
-      discountEnabled: Boolean(s.discountEnabled ?? false),
-      maxDiscountPercent: clamp(Number(s.maxDiscountPercent ?? 10), 0, 50),
-      offerRule: pickOfferRule(s.offerRule),
-      minCartValueForDiscount:
-        s.minCartValueForDiscount == null ? null : Number(s.minCartValueForDiscount),
-      couponPrefix: (s.couponPrefix ?? "").trim() ? String(s.couponPrefix).trim() : null,
-      couponValidityHours: clamp(Number(s.couponValidityHours ?? 24), 1, 168),
-      freeShippingEnabled: Boolean(s.freeShippingEnabled ?? false),
+      discountEnabled: Boolean(extras?.discount_enabled ?? false),
+      maxDiscountPercent: clamp(Number(extras?.max_discount_percent ?? 10), 0, 50),
+      offerRule: pickOfferRule(extras?.offer_rule ?? "ask_only"),
+      minCartValueForDiscount: extras?.min_cart_value_for_discount == null ? null : Number(extras.min_cart_value_for_discount),
+      couponPrefix: (extras?.coupon_prefix ?? "").trim() ? String(extras?.coupon_prefix).trim() : null,
+      couponValidityHours: clamp(Number(extras?.coupon_validity_hours ?? 24), 1, 168),
+      freeShippingEnabled: Boolean(extras?.free_shipping_enabled ?? false),
 
-      followupEmailEnabled: Boolean(s.followupEmailEnabled ?? true),
-      followupSmsEnabled: Boolean(s.followupSmsEnabled ?? false),
+      followupEmailEnabled: Boolean(extras?.followup_email_enabled ?? true),
+      followupSmsEnabled: Boolean(extras?.followup_sms_enabled ?? false),
 
       userPrompt: s.userPrompt ?? "",
     },
@@ -133,6 +223,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const settings = await ensureSettings(shop);
   const s: any = settings as any;
 
+  const extras = await readSettingsExtras(shop);
+
   const fd = await request.formData();
 
   const enabled = String(fd.get("enabled") ?? "") === "on";
@@ -142,30 +234,41 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const retryMinutes = toInt(fd.get("retryMinutes"), settings.retryMinutes);
   const minOrderValue = toFloat(fd.get("minOrderValue"), settings.minOrderValue);
 
-  const currency =
-    String(fd.get("currency") ?? settings.currency ?? "USD").toUpperCase().trim() || "USD";
+  const currency = pickCurrency(fd.get("currency") ?? settings.currency ?? "USD");
 
   const callWindowStart =
     String(fd.get("callWindowStart") ?? s.callWindowStart ?? "09:00").trim() || "09:00";
   const callWindowEnd =
     String(fd.get("callWindowEnd") ?? s.callWindowEnd ?? "19:00").trim() || "19:00";
 
-  const tone = pickTone(fd.get("tone"));
-  const goal = pickGoal(fd.get("goal"));
-  const maxCallSeconds = clamp(toInt(fd.get("maxCallSeconds"), Number(s.maxCallSeconds ?? 120)), 45, 300);
+  const tone = pickTone(fd.get("tone") ?? extras?.tone ?? "neutral");
+  const goal = pickGoal(fd.get("goal") ?? extras?.goal ?? "complete_checkout");
+  const maxCallSeconds = clamp(
+    toInt(fd.get("maxCallSeconds"), Number(extras?.max_call_seconds ?? 120)),
+    45,
+    300
+  );
   const maxFollowupQuestions = clamp(
-    toInt(fd.get("maxFollowupQuestions"), Number(s.maxFollowupQuestions ?? 1)),
+    toInt(fd.get("maxFollowupQuestions"), Number(extras?.max_followup_questions ?? 1)),
     0,
     3
   );
 
   const discountEnabled = toBool(fd.get("discountEnabled"));
-  const maxDiscountPercent = clamp(toInt(fd.get("maxDiscountPercent"), Number(s.maxDiscountPercent ?? 10)), 0, 50);
-  const offerRule = pickOfferRule(fd.get("offerRule"));
+  const maxDiscountPercent = clamp(
+    toInt(fd.get("maxDiscountPercent"), Number(extras?.max_discount_percent ?? 10)),
+    0,
+    50
+  );
+  const offerRule = pickOfferRule(fd.get("offerRule") ?? extras?.offer_rule ?? "ask_only");
   const minCartValueForDiscount = toFloatOrNull(fd.get("minCartValueForDiscount"));
   const couponPrefixRaw = String(fd.get("couponPrefix") ?? "").trim();
   const couponPrefix = couponPrefixRaw ? couponPrefixRaw.slice(0, 12) : null;
-  const couponValidityHours = clamp(toInt(fd.get("couponValidityHours"), Number(s.couponValidityHours ?? 24)), 1, 168);
+  const couponValidityHours = clamp(
+    toInt(fd.get("couponValidityHours"), Number(extras?.coupon_validity_hours ?? 24)),
+    1,
+    168
+  );
   const freeShippingEnabled = toBool(fd.get("freeShippingEnabled"));
 
   const followupEmailEnabled = toBool(fd.get("followupEmailEnabled"));
@@ -173,6 +276,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const userPrompt = String(fd.get("userPrompt") ?? "").trim();
 
+  // Keep the existing Prisma update for fields already in prisma schema
   await db.settings.update({
     where: { shop },
     data: {
@@ -184,25 +288,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       currency,
       callWindowStart,
       callWindowEnd,
-
-      tone,
-      goal,
-      maxCallSeconds,
-      maxFollowupQuestions,
-
-      discountEnabled,
-      maxDiscountPercent,
-      offerRule,
-      minCartValueForDiscount,
-      couponPrefix,
-      couponValidityHours,
-      freeShippingEnabled,
-
-      followupEmailEnabled,
-      followupSmsEnabled,
-
       userPrompt,
     } as any,
+  });
+
+  // Write the new SQL-added columns via raw SQL (no prisma schema change)
+  await writeSettingsExtras(shop, {
+    tone,
+    goal,
+    maxCallSeconds,
+    maxFollowupQuestions,
+    discountEnabled,
+    maxDiscountPercent,
+    offerRule,
+    minCartValueForDiscount,
+    couponPrefix,
+    couponValidityHours,
+    freeShippingEnabled,
+    followupEmailEnabled,
+    followupSmsEnabled,
   });
 
   return {
@@ -297,7 +401,11 @@ export default function SettingsRoute() {
 
                   <label style={labelStyle}>
                     <div>Currency</div>
-                    <input name="currency" defaultValue={settings.currency} style={inputStyle} />
+                    <select name="currency" defaultValue={pickCurrency(settings.currency)} style={inputStyle}>
+                      <option value="USD">USD</option>
+                      <option value="EUR">EUR</option>
+                      <option value="GBP">GBP</option>
+                    </select>
                   </label>
 
                   <label style={labelStyle}>
