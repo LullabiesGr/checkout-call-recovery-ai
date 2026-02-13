@@ -5,7 +5,12 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { Form, useLoaderData, useRevalidator, useRouteError } from "react-router";
+import {
+  Form,
+  useLoaderData,
+  useRevalidator,
+  useRouteError,
+} from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
@@ -128,6 +133,7 @@ type Row = {
   humanIntervention: boolean | null;
   discountSuggest: boolean | null;
   discountPercent: number | null;
+  isRecovered: boolean;
 };
 
 type CheckoutUIRow = {
@@ -155,6 +161,8 @@ type CheckoutUIRow = {
   buyProbabilityPct: number | null;
   disposition: string | null;
   aiStatus: string | null;
+
+  isRecovered: boolean;
 };
 
 type LoaderData = {
@@ -245,12 +253,19 @@ function toDisposition(v?: string | null): Row["disposition"] {
   return "unknown";
 }
 
+function isRecoveredFromOutcome(outcome: string | null | undefined) {
+  const s = safeStr(outcome).toLowerCase();
+  if (!s) return false;
+  return s.includes("recovered") || s.includes("converted") || s.includes("paid");
+}
+
 function toCallOutcomeTone(
   outcome: string | null
 ): "green" | "amber" | "red" | "neutral" {
   const s = safeStr(outcome).toLowerCase();
   if (!s) return "neutral";
-  if (s.includes("recovered")) return "green";
+  if (s.includes("recovered") || s.includes("converted") || s.includes("paid"))
+    return "green";
   if (s.includes("needs_followup")) return "amber";
   if (s.includes("voicemail") || s.includes("no_answer")) return "amber";
   if (
@@ -340,12 +355,8 @@ function pickRecordingUrl(sb: SupabaseCallSummary | null): string | null {
 }
 
 /* =========================
-   Supabase REST fetch (FIXED)
-   =========================
-   Το UI σου "δείχνει τα ίδια" γιατί μέχρι τώρα το query προς PostgREST
-   ήταν εύκολο να μη φέρνει ΚΑΝΕΝΑ row (λάθος encoding/φίλτρα).
-   Εδώ είναι production-safe: URLSearchParams + σωστό or() + χωρίς διπλό encoding.
-*/
+   Supabase REST fetch
+   ========================= */
 
 function uniq(values: string[]) {
   const s = new Set(values.map((x) => x.trim()).filter(Boolean));
@@ -353,8 +364,6 @@ function uniq(values: string[]) {
 }
 
 function cleanIdList(values: string[]) {
-  // Vapi call ids είναι strings τύπου "01jc..." -> δεν βάζουμε quotes, απλά τα περνάμε raw.
-  // Αφαιρούμε κόμματα/παρενθέσεις/quotes για να μην σπάει query.
   return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
 }
 
@@ -432,23 +441,14 @@ async function fetchSupabaseSummaries(opts: {
   ].join(",");
 
   const orParts: string[] = [];
-  // PostgREST OR syntax: or=(col.in.(a,b),other.in.(c,d))
   if (callIds.length) orParts.push(`call_id.in.(${callIds.join(",")})`);
   if (callJobIds.length) orParts.push(`call_job_id.in.(${callJobIds.join(",")})`);
   if (checkoutIds.length) orParts.push(`checkout_id.in.(${checkoutIds.join(",")})`);
 
   const params = new URLSearchParams();
   params.set("select", select);
-
-  // Αν το "shop" δεν γράφεται πάντα στο Supabase, αυτό το φίλτρο σε μηδενίζει.
-  // Production fix: επιτρέπουμε και null shop.
-  // or shop.eq.<shop> OR shop.is.null
   params.set("or", `(${orParts.join(",")})`);
 
-  // shop filter: (shop = shop) OR (shop is null)
-  // PostgREST AND: βάζουμε extra filter με `and` δεν υπάρχει ως param, άρα κάνουμε 2 queries;
-  // πιο ασφαλές: απλό shop=eq.<shop> όταν ξέρεις ότι γράφεται.
-  // Εδώ κάνουμε "soft" behavior: αν δεν επιστρέψει τίποτα, ξαναδοκιμάζουμε χωρίς shop filter.
   const withShopParams = new URLSearchParams(params);
   withShopParams.set("shop", `eq.${shop}`);
 
@@ -473,10 +473,8 @@ async function fetchSupabaseSummaries(opts: {
     return Array.isArray(data) ? data : [];
   }
 
-  // 1) try with shop filter
   let data = await doFetch(withShopParams);
 
-  // 2) fallback without shop filter (αν το shop column είναι null/κενό)
   if (data && data.length === 0) {
     data = await doFetch(params);
   }
@@ -783,6 +781,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const callOutcome = sb?.call_outcome ? String(sb.call_outcome) : null;
 
     const recordingFromSb = pickRecordingUrl(sb);
+    const isRecovered = isRecoveredFromOutcome(callOutcome) || safeStr(j.outcome).toLowerCase().includes("recovered");
 
     return {
       id: String(j.id),
@@ -819,6 +818,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         typeof sb?.discount_percent === "number" && Number.isFinite(sb.discount_percent)
           ? Math.round(sb.discount_percent)
           : null,
+      isRecovered,
     };
   });
 
@@ -898,6 +898,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     const recordingFromSb = pickRecordingUrl(sb);
 
+    const callOutcome = sb?.call_outcome ? String(sb.call_outcome) : null;
+    const isRecovered =
+      String(c.status ?? "").toUpperCase() === "CONVERTED" || isRecoveredFromOutcome(callOutcome);
+
     return {
       checkoutId,
       status: c.status,
@@ -918,7 +922,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       providerCallId: j?.providerCallId ? String(j.providerCallId) : null,
       recordingUrl: (recordingFromSb ?? (j?.recordingUrl ? String(j.recordingUrl) : null)) ?? null,
 
-      callOutcome: sb?.call_outcome ? String(sb.call_outcome) : null,
+      callOutcome,
       sentiment: sb?.sentiment ? String(sb.sentiment) : sb?.tone ? String(sb.tone) : null,
       buyProbabilityPct:
         typeof sb?.buy_probability === "number" && Number.isFinite(sb.buy_probability)
@@ -926,6 +930,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           : null,
       disposition: sb?.disposition ? String(sb.disposition) : null,
       aiStatus: sb?.ai_status ? String(sb.ai_status) : null,
+
+      isRecovered,
     };
   });
 
@@ -958,7 +964,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const fd = await request.formData();
   const intent = String(fd.get("intent") ?? "");
 
-  const redirectBack = () => new Response(null, { status: 303, headers: { Location: "/app" } });
+  const redirectBack = () =>
+    new Response(null, { status: 303, headers: { Location: "/app" } });
 
   if (intent === "run_jobs") {
     const settings = await ensureSettings(shop);
@@ -974,37 +981,58 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     for (const job of jobs) {
       const locked = await db.callJob.updateMany({
         where: { id: job.id, shop, status: "QUEUED" },
-        data: { status: "CALLING", attempts: { increment: 1 }, provider: vapiOk ? "vapi" : "sim", outcome: null },
+        data: {
+          status: "CALLING",
+          attempts: { increment: 1 },
+          provider: vapiOk ? "vapi" : "sim",
+          outcome: null,
+        },
       });
       if (locked.count === 0) continue;
 
       if (!vapiOk) {
         await db.callJob.update({
           where: { id: job.id },
-          data: { status: "COMPLETED", outcome: `SIMULATED_CALL_OK phone=${job.phone}` },
+          data: {
+            status: "COMPLETED",
+            outcome: `SIMULATED_CALL_OK phone=${job.phone}`,
+          },
         });
         continue;
       }
 
       try {
         await createVapiCallForJob({ shop, callJobId: job.id });
-        await db.callJob.update({ where: { id: job.id }, data: { status: "CALLING", outcome: "VAPI_CALL_STARTED" } });
+        await db.callJob.update({
+          where: { id: job.id },
+          data: { status: "CALLING", outcome: "VAPI_CALL_STARTED" },
+        });
       } catch (e: any) {
         const maxAttempts = settings.maxAttempts ?? 2;
-        const fresh = await db.callJob.findUnique({ where: { id: job.id }, select: { attempts: true } });
+        const fresh = await db.callJob.findUnique({
+          where: { id: job.id },
+          select: { attempts: true },
+        });
         const attemptsAfter = Number(fresh?.attempts ?? 0);
 
         if (attemptsAfter >= maxAttempts) {
           await db.callJob.update({
             where: { id: job.id },
-            data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
+            data: {
+              status: "FAILED",
+              outcome: `ERROR: ${String(e?.message ?? e)}`,
+            },
           });
         } else {
           const retryMinutes = settings.retryMinutes ?? 180;
           const next = new Date(Date.now() + retryMinutes * 60 * 1000);
           await db.callJob.update({
             where: { id: job.id },
-            data: { status: "QUEUED", scheduledFor: next, outcome: `RETRY_SCHEDULED in ${retryMinutes}m` },
+            data: {
+              status: "QUEUED",
+              scheduledFor: next,
+              outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
+            },
           });
         }
       }
@@ -1021,14 +1049,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!vapiOk) {
       await db.callJob.updateMany({
         where: { id: callJobId, shop },
-        data: { outcome: "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID/VAPI_SERVER_URL)" },
+        data: {
+          outcome:
+            "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID/VAPI_SERVER_URL)",
+        },
       });
       return redirectBack();
     }
 
     const locked = await db.callJob.updateMany({
       where: { id: callJobId, shop, status: "QUEUED" },
-      data: { status: "CALLING", attempts: { increment: 1 }, provider: "vapi", outcome: null },
+      data: {
+        status: "CALLING",
+        attempts: { increment: 1 },
+        provider: "vapi",
+        outcome: null,
+      },
     });
     if (locked.count === 0) return redirectBack();
 
@@ -1042,20 +1078,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const settings = await ensureSettings(shop);
       const maxAttempts = settings.maxAttempts ?? 2;
 
-      const fresh = await db.callJob.findUnique({ where: { id: callJobId }, select: { attempts: true } });
+      const fresh = await db.callJob.findUnique({
+        where: { id: callJobId },
+        select: { attempts: true },
+      });
       const attemptsAfter = Number(fresh?.attempts ?? 0);
 
       if (attemptsAfter >= maxAttempts) {
         await db.callJob.updateMany({
           where: { id: callJobId, shop },
-          data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
+          data: {
+            status: "FAILED",
+            outcome: `ERROR: ${String(e?.message ?? e)}`,
+          },
         });
       } else {
         const retryMinutes = settings.retryMinutes ?? 180;
         const next = new Date(Date.now() + retryMinutes * 60 * 1000);
         await db.callJob.updateMany({
           where: { id: callJobId, shop },
-          data: { status: "QUEUED", scheduledFor: next, outcome: `RETRY_SCHEDULED in ${retryMinutes}m` },
+          data: {
+            status: "QUEUED",
+            scheduledFor: next,
+            outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
+          },
         });
       }
     }
@@ -1198,25 +1244,69 @@ export default function Dashboard() {
     ? parseTextList(selected.sb?.issues_to_fix, selected.sb?.issues_to_fix_text, 8)
     : [];
 
+  const recoveredRowStyle: React.CSSProperties = {
+    background:
+      "linear-gradient(90deg, rgba(16,185,129,0.14), rgba(16,185,129,0.03) 55%, rgba(255,255,255,1) 100%)",
+  };
+
   return (
     <div style={pageWrap}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
         <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-          <div style={{ fontWeight: 1100, fontSize: 18, color: "rgba(17,24,39,0.92)" }}>7-day snapshot</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <div
+            style={{
+              fontWeight: 1100,
+              fontSize: 18,
+              color: "rgba(17,24,39,0.92)",
+            }}
+          >
+            7-day snapshot
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
             <Pill title="Shop">{shop}</Pill>
             <Pill title="Currency">{currency}</Pill>
             <Pill title="Provider">{vapiConfigured ? "Vapi ready" : "Sim mode"}</Pill>
-            {stats.callingNow > 0 ? <Pill tone="blue" title="Calls in progress">{stats.callingNow} calling</Pill> : null}
-            {stats.queuedCalls > 0 ? <Pill tone="amber" title="Calls queued">{stats.queuedCalls} queued</Pill> : null}
+            {stats.callingNow > 0 ? (
+              <Pill tone="blue" title="Calls in progress">
+                {stats.callingNow} calling
+              </Pill>
+            ) : null}
+            {stats.queuedCalls > 0 ? (
+              <Pill tone="amber" title="Calls queued">
+                {stats.queuedCalls} queued
+              </Pill>
+            ) : null}
           </div>
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <SoftButton type="button" tone={mode === "calls" ? "primary" : "ghost"} onClick={() => setMode("calls")}>
+          <SoftButton
+            type="button"
+            tone={mode === "calls" ? "primary" : "ghost"}
+            onClick={() => setMode("calls")}
+          >
             Calls view
           </SoftButton>
-          <SoftButton type="button" tone={mode === "checkouts" ? "primary" : "ghost"} onClick={() => setMode("checkouts")}>
+          <SoftButton
+            type="button"
+            tone={mode === "checkouts" ? "primary" : "ghost"}
+            onClick={() => setMode("checkouts")}
+          >
             All checkouts
           </SoftButton>
         </div>
@@ -1263,7 +1353,12 @@ export default function Dashboard() {
 
           <Pill title="Auto dial status">{vapiConfigured ? "Auto dial enabled" : "Auto dial disabled"}</Pill>
 
-          <SoftButton type="button" onClick={() => revalidator.revalidate()} style={{ padding: "10px 12px" }} title="Force refresh now">
+          <SoftButton
+            type="button"
+            onClick={() => revalidator.revalidate()}
+            style={{ padding: "10px 12px" }}
+            title="Force refresh now"
+          >
             Refresh
           </SoftButton>
 
@@ -1342,8 +1437,19 @@ export default function Dashboard() {
               </thead>
               <tbody>
                 {filteredCheckouts.map((c) => (
-                  <tr key={c.checkoutId} style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-                    <td style={{ ...cell, color: "rgba(30,58,138,0.95)" }}>{c.checkoutId}</td>
+                  <tr
+                    key={c.checkoutId}
+                    style={{
+                      borderBottom: "1px solid rgba(0,0,0,0.06)",
+                      ...(c.isRecovered ? recoveredRowStyle : null),
+                    }}
+                  >
+                    <td style={{ ...cell, color: "rgba(30,58,138,0.95)" }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <span>{c.checkoutId}</span>
+                        {c.isRecovered ? <Pill tone="green" title="Recovered / Converted">RECOVERED</Pill> : null}
+                      </div>
+                    </td>
                     <td style={cell}>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                         <CheckoutStatusPill status={c.status} />
@@ -1371,7 +1477,9 @@ export default function Dashboard() {
                       </span>
                     </td>
                     <td style={cell}>{formatWhen(c.updatedAt)}</td>
-                    <td style={cell}>{c.callStatus ? <StatusPill status={c.callStatus} /> : <Pill>—</Pill>}</td>
+                    <td style={cell}>
+                      {c.callStatus ? <StatusPill status={c.callStatus} /> : <Pill>—</Pill>}
+                    </td>
                     <td style={cell}>
                       <AiStatusPill status={c.aiStatus} err={null} />
                     </td>
@@ -1447,11 +1555,20 @@ export default function Dashboard() {
                         key={j.id}
                         onClick={() => setSelectedId(j.id)}
                         style={{
-                          background: isSelected ? "rgba(59,130,246,0.06)" : "white",
+                          background: j.isRecovered
+                            ? "linear-gradient(90deg, rgba(16,185,129,0.12), rgba(16,185,129,0.02) 60%, rgba(255,255,255,1) 100%)"
+                            : isSelected
+                            ? "rgba(59,130,246,0.06)"
+                            : "white",
                           cursor: "pointer",
                         }}
                       >
-                        <td style={{ ...cell, color: "rgba(30,58,138,0.95)" }}>{j.checkoutId}</td>
+                        <td style={{ ...cell, color: "rgba(30,58,138,0.95)" }}>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                            <span>{j.checkoutId}</span>
+                            {j.isRecovered ? <Pill tone="green">RECOVERED</Pill> : null}
+                          </div>
+                        </td>
                         <td style={cell}>{j.customerName ?? "-"}</td>
 
                         <td style={{ ...cell, maxWidth: 260 }}>
@@ -1484,8 +1601,16 @@ export default function Dashboard() {
                         <td style={cell}>
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                             <OutcomePill outcome={j.callOutcome} />
-                            {j.humanIntervention === true ? <Pill tone="amber" title="Needs human takeover">HUMAN</Pill> : null}
-                            {j.discountSuggest === true ? <Pill tone="blue" title="AI suggests discount">DISC</Pill> : null}
+                            {j.humanIntervention === true ? (
+                              <Pill tone="amber" title="Needs human takeover">
+                                HUMAN
+                              </Pill>
+                            ) : null}
+                            {j.discountSuggest === true ? (
+                              <Pill tone="blue" title="AI suggests discount">
+                                DISC
+                              </Pill>
+                            ) : null}
                           </div>
                         </td>
 
@@ -1533,7 +1658,9 @@ export default function Dashboard() {
             <div style={{ padding: 14, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
                 <div style={{ display: "grid", gap: 4 }}>
-                  <div style={{ fontSize: 13, fontWeight: 1000, color: "rgba(17,24,39,0.80)" }}>Call intelligence</div>
+                  <div style={{ fontSize: 13, fontWeight: 1000, color: "rgba(17,24,39,0.80)" }}>
+                    Call intelligence
+                  </div>
                   <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(17,24,39,0.45)" }}>
                     {selected ? `Created ${formatWhen(selected.createdAt)}` : "Select a row"}
                   </div>
@@ -1543,6 +1670,7 @@ export default function Dashboard() {
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
                     <StatusPill status={selected.status} />
                     <OutcomePill outcome={selected.callOutcome} />
+                    {selected.isRecovered ? <Pill tone="green">RECOVERED</Pill> : null}
                   </div>
                 ) : null}
               </div>
@@ -1560,10 +1688,16 @@ export default function Dashboard() {
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <Pill title="Checkout ID">{selected.checkoutId}</Pill>
 
-                      {selected.providerCallId ? <Pill title="Vapi call id">{selected.providerCallId.slice(0, 14)}…</Pill> : null}
-                      {selected.sb?.call_job_id ? <Pill title="call_job_id">{String(selected.sb.call_job_id).slice(0, 12)}…</Pill> : null}
+                      {selected.providerCallId ? (
+                        <Pill title="Vapi call id">{selected.providerCallId.slice(0, 14)}…</Pill>
+                      ) : null}
+                      {selected.sb?.call_job_id ? (
+                        <Pill title="call_job_id">{String(selected.sb.call_job_id).slice(0, 12)}…</Pill>
+                      ) : null}
 
-                      {selected.sb?.latest_status ? <Pill title="Latest status">{String(selected.sb.latest_status)}</Pill> : null}
+                      {selected.sb?.latest_status ? (
+                        <Pill title="Latest status">{String(selected.sb.latest_status)}</Pill>
+                      ) : null}
                       {selected.endedReason ? <Pill title="Ended reason">{selected.endedReason}</Pill> : null}
 
                       <AiStatusPill status={selected.sb?.ai_status ?? null} err={selected.sb?.ai_error ?? null} />
@@ -1571,8 +1705,12 @@ export default function Dashboard() {
 
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {selected.sb?.received_at ? <Pill title="received_at">{formatWhen(selected.sb.received_at)}</Pill> : null}
-                      {selected.sb?.last_received_at ? <Pill title="last_received_at">{formatWhen(selected.sb.last_received_at)}</Pill> : null}
-                      {selected.sb?.ai_processed_at ? <Pill title="ai_processed_at">{formatWhen(selected.sb.ai_processed_at)}</Pill> : null}
+                      {selected.sb?.last_received_at ? (
+                        <Pill title="last_received_at">{formatWhen(selected.sb.last_received_at)}</Pill>
+                      ) : null}
+                      {selected.sb?.ai_processed_at ? (
+                        <Pill title="ai_processed_at">{formatWhen(selected.sb.ai_processed_at)}</Pill>
+                      ) : null}
                     </div>
                   </div>
 
@@ -1585,12 +1723,18 @@ export default function Dashboard() {
                       {selected.sentiment ? <Pill title="Sentiment">{selected.sentiment.toUpperCase()}</Pill> : null}
                       {selected.humanIntervention === true ? <Pill tone="amber">HUMAN TAKEOVER</Pill> : null}
                       {selected.discountSuggest === true ? (
-                        <Pill tone="blue" title={selected.discountPercent != null ? `Suggest ${selected.discountPercent}%` : ""}>
+                        <Pill
+                          tone="blue"
+                          title={selected.discountPercent != null ? `Suggest ${selected.discountPercent}%` : ""}
+                        >
                           DISCOUNT SUGGESTED
                         </Pill>
                       ) : null}
                       {selected.sb?.voicemail === true ? <Pill tone="amber" title="Voicemail detected">VOICEMAIL</Pill> : null}
-                      {selected.sb?.customer_intent ? <Pill title="customer_intent">{String(selected.sb.customer_intent)}</Pill> : null}
+                      {selected.sb?.customer_intent ? (
+                        <Pill title="customer_intent">{String(selected.sb.customer_intent)}</Pill>
+                      ) : null}
+                      {selected.isRecovered ? <Pill tone="green">RECOVERED</Pill> : null}
                     </div>
 
                     {selected.tags.length ? (
@@ -1634,14 +1778,18 @@ export default function Dashboard() {
                           lineHeight: 1.35,
                         }}
                       >
-                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>KEY QUOTES</div>
+                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>
+                          KEY QUOTES
+                        </div>
                         {selectedKeyQuotes.slice(0, 6).map((qq) => `• ${qq}`).join("\n")}
                       </div>
                     ) : null}
                   </div>
 
                   <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Recommended next action</div>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>
+                      Recommended next action
+                    </div>
                     <div
                       style={{
                         border: "1px solid rgba(59,130,246,0.20)",
@@ -1659,7 +1807,9 @@ export default function Dashboard() {
                   </div>
 
                   <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Suggested follow-up (email)</div>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>
+                      Suggested follow-up (email)
+                    </div>
                     <div
                       style={{
                         border: "1px solid rgba(0,0,0,0.10)",
@@ -1686,7 +1836,10 @@ export default function Dashboard() {
                       </SoftButton>
 
                       {selected.sb?.human_intervention_reason ? (
-                        <SoftButton type="button" onClick={() => copy(String(selected.sb?.human_intervention_reason ?? ""))}>
+                        <SoftButton
+                          type="button"
+                          onClick={() => copy(String(selected.sb?.human_intervention_reason ?? ""))}
+                        >
                           Copy human reason
                         </SoftButton>
                       ) : null}
@@ -1706,7 +1859,9 @@ export default function Dashboard() {
                   </div>
 
                   <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Objections / Issues</div>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>
+                      Objections / Issues
+                    </div>
                     <div style={{ display: "grid", gap: 8 }}>
                       <div
                         style={{
@@ -1720,7 +1875,9 @@ export default function Dashboard() {
                           lineHeight: 1.35,
                         }}
                       >
-                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>OBJECTIONS</div>
+                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>
+                          OBJECTIONS
+                        </div>
                         {selectedObjections.length ? selectedObjections.slice(0, 8).join("\n") : "—"}
                       </div>
 
@@ -1736,14 +1893,18 @@ export default function Dashboard() {
                           lineHeight: 1.35,
                         }}
                       >
-                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>ISSUES TO FIX</div>
+                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>
+                          ISSUES TO FIX
+                        </div>
                         {selectedIssues.length ? selectedIssues.slice(0, 8).join("\n") : "—"}
                       </div>
                     </div>
                   </div>
 
                   <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Transcript / Report</div>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>
+                      Transcript / Report
+                    </div>
 
                     <div
                       style={{
@@ -1777,7 +1938,14 @@ export default function Dashboard() {
                           overflow: "auto",
                         }}
                       >
-                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 1000,
+                            color: "rgba(17,24,39,0.45)",
+                            marginBottom: 6,
+                          }}
+                        >
                           END OF CALL REPORT
                         </div>
                         {String(selected.sb.end_of_call_report)}
@@ -1815,8 +1983,7 @@ export default function Dashboard() {
                         border: "1px solid rgba(0,0,0,0.10)",
                         borderRadius: 14,
                         padding: 10,
-                        fontFamily:
-                          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
                         fontSize: 11,
                         fontWeight: 900,
                         color: "rgba(17,24,39,0.65)",
