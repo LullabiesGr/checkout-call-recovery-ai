@@ -1,6 +1,10 @@
 // app/routes/app._index.tsx
 import * as React from "react";
-import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
+import type {
+  ActionFunctionArgs,
+  HeadersFunction,
+  LoaderFunctionArgs,
+} from "react-router";
 import { Form, useLoaderData, useRevalidator, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -13,18 +17,48 @@ import {
 } from "../callRecovery.server";
 import { createVapiCallForJob } from "../callProvider.server";
 
-type Analysis = {
-  sentiment?: "positive" | "neutral" | "negative";
-  tags?: string[];
-  reason?: string;
-  nextAction?: string;
-  followUp?: string;
-  confidence?: number;
-  answered?: boolean;
-  disposition?: "interested" | "needs_support" | "call_back_later" | "not_interested" | "wrong_number" | "unknown";
-  buyProbability?: number;
-  churnProbability?: number;
-  shortSummary?: string;
+/* =========================
+   Types (Prisma + Supabase)
+   ========================= */
+
+type SupabaseCallSummary = {
+  call_id: string;
+  last_received_at?: string | null;
+
+  latest_status?: string | null;
+  ended_reason?: string | null;
+
+  call_outcome?: string | null;
+  disposition?: string | null;
+
+  answered?: boolean | null;
+  voicemail?: boolean | null;
+
+  sentiment?: string | null;
+  buy_probability?: number | null;
+  customer_intent?: string | null;
+
+  tags?: string[] | null;
+  key_quotes?: string[] | null;
+  objections?: string[] | null;
+  issues_to_fix?: string[] | null;
+
+  summary_clean?: string | null;
+  next_best_action?: string | null;
+  follow_up_message?: string | null;
+
+  human_intervention?: boolean | null;
+  human_intervention_reason?: string | null;
+
+  discount_suggest?: boolean | null;
+  discount_percent?: number | null;
+  discount_rationale?: string | null;
+
+  ai_status?: string | null;
+  ai_error?: string | null;
+  ai_processed_at?: string | null;
+
+  ai_insights?: any;
 };
 
 type Row = {
@@ -43,24 +77,24 @@ type Row = {
   endedReason?: string | null;
   transcript?: string | null;
 
-  sentiment?: string | null;
-  tagsCsv?: string | null;
-  reason?: string | null;
-  nextAction?: string | null;
-  followUp?: string | null;
-  analysisJson?: string | null;
+  outcome?: string | null; // legacy / prisma
 
-  outcome?: string | null;
+  // ✅ Supabase enriched
+  sb?: SupabaseCallSummary | null;
 
-  analysis: Analysis | null;
-  answered: "answered" | "no_answer" | "unknown";
+  // Unified fields used by UI
+  answeredFlag: "answered" | "no_answer" | "unknown";
   disposition: "interested" | "needs_support" | "call_back_later" | "not_interested" | "wrong_number" | "unknown";
-  buyProbability: number | null;
-  churnProbability: number | null;
+  sentiment: "positive" | "neutral" | "negative" | null;
+  buyProbabilityPct: number | null; // 0..100
   tags: string[];
-  summaryReason: string | null;
-  summaryNextAction: string | null;
   summaryText: string | null;
+  nextActionText: string | null;
+  followUpText: string | null;
+  callOutcome: string | null;
+  humanIntervention: boolean | null;
+  discountSuggest: boolean | null;
+  discountPercent: number | null;
 };
 
 type CheckoutUIRow = {
@@ -76,15 +110,20 @@ type CheckoutUIRow = {
   currency: string;
   cartPreview: string | null;
 
-  // latest call job
+  // latest call job (Prisma)
   callJobId: string | null;
   callStatus: string | null;
   callScheduledFor: string | null;
   callAttempts: number | null;
-  callOutcome: string | null;
   providerCallId: string | null;
   recordingUrl: string | null;
-  endedReason: string | null;
+
+  // ✅ Supabase enriched
+  callOutcome: string | null; // from supabase when available
+  sentiment: string | null;
+  buyProbabilityPct: number | null;
+  disposition: string | null;
+  aiStatus: string | null;
 };
 
 type LoaderData = {
@@ -103,6 +142,10 @@ type LoaderData = {
   recentJobs: Row[];
   allCheckouts: CheckoutUIRow[];
 };
+
+/* =========================
+   Helpers
+   ========================= */
 
 function buildCartPreview(itemsJson?: string | null): string | null {
   if (!itemsJson) return null;
@@ -132,100 +175,8 @@ function isVapiConfiguredFromEnv() {
   return Boolean(apiKey) && Boolean(assistantId) && Boolean(phoneNumberId) && Boolean(serverUrl);
 }
 
-function clamp01(n: number) {
-  if (!Number.isFinite(n)) return 0;
-  if (n < 0) return 0;
-  if (n > 1) return 1;
-  return n;
-}
-
 function safeStr(v: any) {
   return v == null ? "" : String(v);
-}
-
-function stripFences(s: string) {
-  const t = safeStr(s).trim();
-  if (!t) return "";
-  const fence = /```[a-zA-Z]*\s*([\s\S]*?)\s*```/m.exec(t);
-  if (fence && fence[1]) return String(fence[1]).trim();
-  const fence2 = /```([\s\S]*?)```/m.exec(t);
-  if (fence2 && fence2[1]) return String(fence2[1]).trim();
-  return t;
-}
-
-function tryParseJsonObject(s: string): any | null {
-  const raw0 = safeStr(s);
-  if (!raw0.trim()) return null;
-
-  const raw = stripFences(raw0).trim();
-  if (!raw) return null;
-
-  const parseMaybe = (candidate: string): any | null => {
-    const c = candidate.trim();
-    if (!c) return null;
-
-    try {
-      const p = JSON.parse(c);
-      if (p && typeof p === "object") return p;
-
-      if (typeof p === "string") {
-        try {
-          const p2 = JSON.parse(p);
-          if (p2 && typeof p2 === "object") return p2;
-        } catch {}
-      }
-    } catch {}
-
-    if (c.includes('\\"') || c.includes("\\n") || c.includes("\\t")) {
-      try {
-        const unescaped = JSON.parse(`"${c.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
-        if (typeof unescaped === "string") {
-          try {
-            const p3 = JSON.parse(unescaped);
-            if (p3 && typeof p3 === "object") return p3;
-          } catch {}
-        }
-      } catch {}
-    }
-
-    return null;
-  };
-
-  const whole = parseMaybe(raw);
-  if (whole) return whole;
-
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    const chunk = raw.slice(start, end + 1);
-    const obj = parseMaybe(chunk);
-    if (obj) return obj;
-  }
-
-  const r2 = raw0.trim();
-  const s2 = r2.indexOf("{");
-  const e2 = r2.lastIndexOf("}");
-  if (s2 >= 0 && e2 > s2) {
-    const chunk2 = r2.slice(s2, e2 + 1);
-    const obj2 = parseMaybe(chunk2);
-    if (obj2) return obj2;
-  }
-
-  return null;
-}
-
-function normalizeTag(t: string) {
-  return safeStr(t).trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40);
-}
-
-function splitTags(csv?: string | null): string[] {
-  const raw = safeStr(csv).trim();
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((x) => normalizeTag(x))
-    .filter(Boolean)
-    .slice(0, 12);
 }
 
 function formatWhen(iso: string) {
@@ -234,167 +185,99 @@ function formatWhen(iso: string) {
   return d.toLocaleString();
 }
 
+function normalizeTag(t: string) {
+  return safeStr(t).trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40);
+}
+
 function cleanSentiment(v?: string | null) {
   const s = safeStr(v).trim().toLowerCase();
   if (s === "positive" || s === "neutral" || s === "negative") return s as any;
   return null;
 }
 
-function pickAnalysis(j: any): Analysis | null {
-  const a1 = j.analysisJson ? tryParseJsonObject(j.analysisJson) : null;
-  const a2 = !a1 && j.outcome ? tryParseJsonObject(j.outcome) : null;
-  const a = a1 || a2;
+function toDisposition(v?: string | null): Row["disposition"] {
+  const s = safeStr(v).trim().toLowerCase();
+  if (
+    s === "interested" ||
+    s === "needs_support" ||
+    s === "call_back_later" ||
+    s === "not_interested" ||
+    s === "wrong_number" ||
+    s === "unknown"
+  ) return s as any;
+  return "unknown";
+}
 
-  const fromJson = (obj: any): Analysis | null => {
-    if (!obj || typeof obj !== "object") return null;
+function toCallOutcomeTone(outcome: string | null): "green" | "amber" | "red" | "neutral" {
+  const s = safeStr(outcome).toLowerCase();
+  if (!s) return "neutral";
+  if (s.includes("recovered")) return "green";
+  if (s.includes("needs_followup")) return "amber";
+  if (s.includes("voicemail") || s.includes("no_answer")) return "amber";
+  if (s.includes("not_recovered") || s.includes("wrong_number") || s.includes("not_interested")) return "red";
+  return "neutral";
+}
 
-    const tags = Array.isArray(obj.tags) ? obj.tags.map(normalizeTag).filter(Boolean).slice(0, 12) : [];
-    const sentiment = cleanSentiment(obj.sentiment) ?? undefined;
-    const confidence = typeof obj.confidence === "number" ? clamp01(obj.confidence) : undefined;
-
-    const buyProbability = typeof obj.buyProbability === "number" ? clamp01(obj.buyProbability) : undefined;
-    const churnProbability = typeof obj.churnProbability === "number" ? clamp01(obj.churnProbability) : undefined;
-
-    const dispositionRaw = safeStr(obj.disposition).trim().toLowerCase();
-    const disposition = ["interested", "needs_support", "call_back_later", "not_interested", "wrong_number", "unknown"].includes(
-      dispositionRaw
-    )
-      ? (dispositionRaw as any)
-      : undefined;
-
-    return {
-      sentiment,
-      tags,
-      reason: typeof obj.reason === "string" ? obj.reason.trim() : undefined,
-      nextAction: typeof obj.nextAction === "string" ? obj.nextAction.trim() : undefined,
-      followUp: typeof obj.followUp === "string" ? obj.followUp.trim() : undefined,
-      confidence,
-      answered: typeof obj.answered === "boolean" ? obj.answered : undefined,
-      disposition,
-      buyProbability,
-      churnProbability,
-      shortSummary: typeof obj.shortSummary === "string" ? obj.shortSummary.trim() : undefined,
-    };
-  };
-
-  const parsed = a ? fromJson(a) : null;
-
-  if (!parsed) {
-    const reasonPlain = j.reason && !tryParseJsonObject(j.reason) ? safeStr(j.reason).trim() : "";
-    const nextActionPlain = j.nextAction && !tryParseJsonObject(j.nextAction) ? safeStr(j.nextAction).trim() : "";
-    const followUpPlain = j.followUp && !tryParseJsonObject(j.followUp) ? safeStr(j.followUp).trim() : "";
-
-    const tags = splitTags(j.tagsCsv);
-    const sentiment = cleanSentiment(j.sentiment) ?? undefined;
-
-    if (!reasonPlain && !nextActionPlain && !followUpPlain && tags.length === 0 && !sentiment) return null;
-
-    return {
-      sentiment,
-      tags,
-      reason: reasonPlain || undefined,
-      nextAction: nextActionPlain || undefined,
-      followUp: followUpPlain || undefined,
-    };
+function pickLatestJobByCheckout(jobs: Array<any>) {
+  const map = new Map<string, any>();
+  for (const j of jobs) {
+    const key = String(j.checkoutId ?? "");
+    if (!key) continue;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, j);
+      continue;
+    }
+    const a = new Date(prev.createdAt).getTime();
+    const b = new Date(j.createdAt).getTime();
+    if (Number.isFinite(b) && b > a) map.set(key, j);
   }
-
-  return parsed;
+  return map;
 }
 
-function deriveFromJob(j: any, analysis: Analysis | null) {
-  const ended = safeStr(j.endedReason).toLowerCase();
+/* =========================
+   Supabase REST fetch
+   ========================= */
 
-  const answeredByEndedReason =
-    ended.includes("customer-ended") || ended.includes("connected") || ended.includes("human") || ended.includes("in-progress");
+async function fetchSupabaseCallSummariesByCallIds(callIds: string[]): Promise<Map<string, SupabaseCallSummary>> {
+  const out = new Map<string, SupabaseCallSummary>();
+  const url = process.env.SUPABASE_URL?.trim();
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 
-  const noAnswerByEndedReason =
-    ended.includes("no-answer") || ended.includes("voicemail") || ended.includes("busy") || ended.includes("failed");
+  if (!url || !key) return out;
+  const ids = callIds.map((x) => x.trim()).filter(Boolean);
+  if (ids.length === 0) return out;
 
-  const answered: Row["answered"] =
-    analysis?.answered === true || answeredByEndedReason
-      ? "answered"
-      : analysis?.answered === false || noAnswerByEndedReason
-      ? "no_answer"
-      : "unknown";
+  // REST filter: call_id=in.(a,b,c)
+  const inList = ids.map((x) => `"${x.replace(/"/g, "")}"`).join(",");
+  const select =
+    "call_id,last_received_at,latest_status,ended_reason,call_outcome,disposition,answered,voicemail,sentiment,buy_probability,customer_intent,tags,key_quotes,objections,issues_to_fix,summary_clean,next_best_action,follow_up_message,human_intervention,human_intervention_reason,discount_suggest,discount_percent,discount_rationale,ai_status,ai_error,ai_processed_at,ai_insights";
 
-  const sentiment = cleanSentiment(analysis?.sentiment ?? j.sentiment);
-  const tags = (analysis?.tags?.length ? analysis.tags : splitTags(j.tagsCsv))
-    .map(normalizeTag)
-    .filter(Boolean)
-    .slice(0, 12);
+  const endpoint = `${url}/rest/v1/vapi_call_summaries?select=${encodeURIComponent(select)}&call_id=in.(${encodeURIComponent(
+    inList
+  )})`;
 
-  const has = (t: string) => tags.includes(t);
-  const dispositionFromAnalysis = safeStr(analysis?.disposition).trim() as any;
+  const r = await fetch(endpoint, {
+    method: "GET",
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+    },
+  });
 
-  const disposition: Row["disposition"] =
-    dispositionFromAnalysis &&
-    ["interested", "needs_support", "call_back_later", "not_interested", "wrong_number", "unknown"].includes(dispositionFromAnalysis)
-      ? dispositionFromAnalysis
-      : has("wrong_number")
-      ? "wrong_number"
-      : has("not_interested")
-      ? "not_interested"
-      : has("call_back_later")
-      ? "call_back_later"
-      : has("needs_support")
-      ? "needs_support"
-      : sentiment === "positive"
-      ? "interested"
-      : "unknown";
+  if (!r.ok) return out;
 
-  let buy =
-    typeof analysis?.buyProbability === "number"
-      ? clamp01(analysis.buyProbability)
-      : (() => {
-          let p = sentiment === "positive" ? 0.75 : sentiment === "neutral" ? 0.45 : sentiment === "negative" ? 0.15 : 0.35;
-          if (has("call_back_later")) p += 0.1;
-          if (has("needs_support")) p += 0.05;
-          if (has("coupon_request")) p += 0.08;
-          if (has("shipping")) p -= 0.05;
-          if (has("price")) p -= 0.1;
-          if (has("trust")) p -= 0.12;
-          if (has("not_interested")) p -= 0.35;
-          if (has("wrong_number")) p -= 0.6;
-          if (answered === "no_answer") p -= 0.2;
-          return clamp01(p);
-        })();
-
-  let churn = typeof analysis?.churnProbability === "number" ? clamp01(analysis.churnProbability) : clamp01(1 - buy);
-
-  const reason =
-    analysis?.shortSummary?.trim()
-      ? analysis.shortSummary.trim()
-      : analysis?.reason?.trim()
-      ? analysis.reason.trim()
-      : j.reason && !tryParseJsonObject(j.reason)
-      ? safeStr(j.reason).trim()
-      : null;
-
-  const nextAction =
-    analysis?.nextAction?.trim()
-      ? analysis.nextAction.trim()
-      : j.nextAction && !tryParseJsonObject(j.nextAction)
-      ? safeStr(j.nextAction).trim()
-      : null;
-
-  const summaryText =
-    analysis?.followUp?.trim()
-      ? analysis.followUp.trim()
-      : j.followUp && !tryParseJsonObject(j.followUp)
-      ? safeStr(j.followUp).trim()
-      : null;
-
-  return {
-    answered,
-    disposition,
-    buyProbability: Number.isFinite(buy) ? buy : null,
-    churnProbability: Number.isFinite(churn) ? churn : null,
-    tags,
-    summaryReason: reason,
-    summaryNextAction: nextAction,
-    summaryText,
-  };
+  const data = (await r.json()) as SupabaseCallSummary[];
+  for (const row of data || []) {
+    if (row?.call_id) out.set(String(row.call_id), row);
+  }
+  return out;
 }
+
+/* =========================
+   UI components
+   ========================= */
 
 function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
   const tone = props.tone ?? "neutral";
@@ -443,8 +326,8 @@ function CheckoutStatusPill({ status }: { status: string }) {
   return <Pill tone={tone as any}>{s}</Pill>;
 }
 
-function AnsweredPill({ answered }: { answered: Row["answered"] }) {
-  if (answered === "answered") return <Pill tone="green" title="Customer picked up / engaged">Answered</Pill>;
+function AnsweredPill({ answered }: { answered: Row["answeredFlag"] }) {
+  if (answered === "answered") return <Pill tone="green" title="Customer engaged">Answered</Pill>;
   if (answered === "no_answer") return <Pill tone="amber" title="No pick up / voicemail / busy">No answer</Pill>;
   return <Pill title="Not enough signal">Unknown</Pill>;
 }
@@ -458,15 +341,30 @@ function DispositionPill({ d }: { d: Row["disposition"] }) {
   return <Pill title="No clear category">Unknown</Pill>;
 }
 
-function PercentPill(props: { label: string; value: number | null; tone: "green" | "red" | "blue" | "amber" }) {
-  const { label, value, tone } = props;
-  if (value == null) return <Pill title="Not available">—</Pill>;
-  const pct = Math.round(clamp01(value) * 100);
+function BuyPill({ pct }: { pct: number | null }) {
+  if (pct == null) return <Pill title="Not available">—</Pill>;
+  const tone = pct >= 70 ? "green" : pct >= 40 ? "amber" : "red";
   return (
-    <Pill tone={tone} title={`${label} ${pct}%`}>
+    <Pill tone={tone as any} title={`Buy probability ${pct}%`}>
       {pct}%
     </Pill>
   );
+}
+
+function OutcomePill({ outcome }: { outcome: string | null }) {
+  const s = safeStr(outcome);
+  if (!s) return <Pill>—</Pill>;
+  return <Pill tone={toCallOutcomeTone(s)} title="AI outcome">{s.toUpperCase()}</Pill>;
+}
+
+function AiStatusPill({ status, err }: { status: string | null; err: string | null }) {
+  const s = safeStr(status).toLowerCase();
+  if (!s) return <Pill>AI: —</Pill>;
+  if (s === "done") return <Pill tone="green">AI: DONE</Pill>;
+  if (s === "processing") return <Pill tone="blue">AI: RUNNING</Pill>;
+  if (s === "pending") return <Pill tone="amber">AI: PENDING</Pill>;
+  if (s === "error") return <Pill tone="red" title={err ?? ""}>AI: ERROR</Pill>;
+  return <Pill>AI: {s.toUpperCase()}</Pill>;
 }
 
 function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "ghost" }) {
@@ -524,22 +422,9 @@ function StatCard(props: { label: string; value: any; sub: string; icon?: string
   );
 }
 
-function pickLatestJobByCheckout(jobs: Array<any>) {
-  const map = new Map<string, any>();
-  for (const j of jobs) {
-    const key = String(j.checkoutId ?? "");
-    if (!key) continue;
-    const prev = map.get(key);
-    if (!prev) {
-      map.set(key, j);
-      continue;
-    }
-    const a = new Date(prev.createdAt).getTime();
-    const b = new Date(j.createdAt).getTime();
-    if (Number.isFinite(b) && b > a) map.set(key, j);
-  }
-  return map;
-}
+/* =========================
+   Loader
+   ========================= */
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -550,7 +435,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   await syncAbandonedCheckoutsFromShopify({ admin, shop, limit: 50 });
   await markAbandonedByDelay(shop, settings.delayMinutes);
 
-  // ✅ This is what creates CallJobs
   await enqueueCallJobs({
     shop,
     enabled: Boolean(settings.enabled),
@@ -564,42 +448,44 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const [abandonedCount7d, convertedCount7d, openCount7d, potentialAgg, queuedCalls, callingNow, completedCalls7d, recentJobs] =
-    await Promise.all([
-      db.checkout.count({ where: { shop, status: "ABANDONED", abandonedAt: { gte: since } } }),
-      db.checkout.count({ where: { shop, status: "CONVERTED", updatedAt: { gte: since } } }),
-      db.checkout.count({ where: { shop, status: "OPEN", createdAt: { gte: since } } }),
-      db.checkout.aggregate({ where: { shop, status: "ABANDONED", abandonedAt: { gte: since } }, _sum: { value: true } }),
-      db.callJob.count({ where: { shop, status: "QUEUED" } }),
-      db.callJob.count({ where: { shop, status: "CALLING" } }),
-      db.callJob.count({ where: { shop, status: "COMPLETED", createdAt: { gte: since } } }),
-      db.callJob.findMany({
-        where: { shop },
-        orderBy: { createdAt: "desc" },
-        take: 50,
-        select: {
-          id: true,
-          checkoutId: true,
-          status: true,
-          scheduledFor: true,
-          attempts: true,
-          createdAt: true,
-          providerCallId: true,
-          recordingUrl: true,
-          endedReason: true,
-          transcript: true,
-          sentiment: true,
-          tagsCsv: true,
-          reason: true,
-          nextAction: true,
-          followUp: true,
-          analysisJson: true,
-          outcome: true,
-        },
-      }),
-    ]);
+  const [
+    abandonedCount7d,
+    convertedCount7d,
+    openCount7d,
+    potentialAgg,
+    queuedCalls,
+    callingNow,
+    completedCalls7d,
+    recentJobsRaw,
+  ] = await Promise.all([
+    db.checkout.count({ where: { shop, status: "ABANDONED", abandonedAt: { gte: since } } }),
+    db.checkout.count({ where: { shop, status: "CONVERTED", updatedAt: { gte: since } } }),
+    db.checkout.count({ where: { shop, status: "OPEN", createdAt: { gte: since } } }),
+    db.checkout.aggregate({ where: { shop, status: "ABANDONED", abandonedAt: { gte: since } }, _sum: { value: true } }),
+    db.callJob.count({ where: { shop, status: "QUEUED" } }),
+    db.callJob.count({ where: { shop, status: "CALLING" } }),
+    db.callJob.count({ where: { shop, status: "COMPLETED", createdAt: { gte: since } } }),
+    db.callJob.findMany({
+      where: { shop },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      select: {
+        id: true,
+        checkoutId: true,
+        status: true,
+        scheduledFor: true,
+        attempts: true,
+        createdAt: true,
+        providerCallId: true,
+        recordingUrl: true,
+        endedReason: true,
+        transcript: true,
+        outcome: true,
+      },
+    }),
+  ]);
 
-  const ids = recentJobs.map((j) => j.checkoutId);
+  const ids = recentJobsRaw.map((j) => j.checkoutId);
   const related =
     ids.length === 0
       ? []
@@ -609,39 +495,72 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         });
 
   const cMap = new Map(related.map((c) => [c.checkoutId, c]));
+
+  // ✅ Pull Supabase summaries for all providerCallId present
+  const callIds = recentJobsRaw.map((j: any) => String(j.providerCallId ?? "")).filter(Boolean);
+  const sbMap = await fetchSupabaseCallSummariesByCallIds(Array.from(new Set(callIds)));
+
   const potentialRevenue7d = Number(potentialAgg._sum.value ?? 0);
 
-  const rows: Row[] = recentJobs.map((j: any) => {
+  const rows: Row[] = recentJobsRaw.map((j: any) => {
     const c = cMap.get(j.checkoutId);
-    const analysis = pickAnalysis(j);
-    const derived = deriveFromJob(j, analysis);
+    const callId = j.providerCallId ? String(j.providerCallId) : "";
+    const sb = callId ? sbMap.get(callId) ?? null : null;
+
+    // Unified fields:
+    const sentiment = cleanSentiment(sb?.sentiment ?? null);
+
+    const answeredFlag: Row["answeredFlag"] =
+      sb?.answered === true ? "answered" : sb?.answered === false ? "no_answer" : "unknown";
+
+    const disposition = toDisposition(sb?.disposition ?? null);
+
+    const buyProbabilityPct =
+      typeof sb?.buy_probability === "number" && Number.isFinite(sb.buy_probability)
+        ? Math.max(0, Math.min(100, Math.round(sb.buy_probability)))
+        : null;
+
+    const tags = Array.isArray(sb?.tags) ? sb!.tags!.map(normalizeTag).filter(Boolean).slice(0, 12) : [];
+
+    const summaryText = sb?.summary_clean ? String(sb.summary_clean) : null;
+    const nextActionText = sb?.next_best_action ? String(sb.next_best_action) : null;
+    const followUpText = sb?.follow_up_message ? String(sb.follow_up_message) : null;
+
+    const callOutcome = sb?.call_outcome ? String(sb.call_outcome) : null;
+
     return {
-      id: j.id,
-      checkoutId: j.checkoutId,
-      status: j.status,
+      id: String(j.id),
+      checkoutId: String(j.checkoutId),
+      status: String(j.status),
       scheduledFor: j.scheduledFor.toISOString(),
       createdAt: j.createdAt.toISOString(),
-      attempts: j.attempts,
+      attempts: Number(j.attempts ?? 0),
 
       customerName: c?.customerName ?? null,
       cartPreview: buildCartPreview(c?.itemsJson ?? null),
 
       providerCallId: j.providerCallId ?? null,
       recordingUrl: j.recordingUrl ?? null,
-      endedReason: j.endedReason ?? null,
+      endedReason: (sb?.ended_reason ?? j.endedReason) ?? null,
       transcript: j.transcript ?? null,
-
-      sentiment: j.sentiment ?? null,
-      tagsCsv: j.tagsCsv ?? null,
-      reason: j.reason ?? null,
-      nextAction: j.nextAction ?? null,
-      followUp: j.followUp ?? null,
-      analysisJson: j.analysisJson ?? null,
 
       outcome: j.outcome ?? null,
 
-      analysis,
-      ...derived,
+      sb,
+
+      answeredFlag,
+      disposition,
+      sentiment,
+      buyProbabilityPct,
+      tags,
+      summaryText,
+      nextActionText,
+      followUpText,
+      callOutcome,
+      humanIntervention: typeof sb?.human_intervention === "boolean" ? sb.human_intervention : null,
+      discountSuggest: typeof sb?.discount_suggest === "boolean" ? sb.discount_suggest : null,
+      discountPercent:
+        typeof sb?.discount_percent === "number" && Number.isFinite(sb.discount_percent) ? Math.round(sb.discount_percent) : null,
     };
   });
 
@@ -676,18 +595,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         scheduledFor: true,
         attempts: true,
         createdAt: true,
-        outcome: true,
         providerCallId: true,
         recordingUrl: true,
-        endedReason: true,
       },
     }),
   ]);
 
   const latestJobMap = pickLatestJobByCheckout(allJobsForMap);
 
+  // Pull summaries for checkout table too (providerCallId from latest job)
+  const checkoutCallIds = allCheckoutsRaw
+    .map((c: any) => {
+      const j = latestJobMap.get(String(c.checkoutId)) ?? null;
+      return j?.providerCallId ? String(j.providerCallId) : "";
+    })
+    .filter(Boolean);
+
+  const sbMap2 = await fetchSupabaseCallSummariesByCallIds(Array.from(new Set(checkoutCallIds)));
+
   const allCheckouts: CheckoutUIRow[] = allCheckoutsRaw.map((c: any) => {
     const j = latestJobMap.get(String(c.checkoutId)) ?? null;
+    const callId = j?.providerCallId ? String(j.providerCallId) : "";
+    const sb = callId ? sbMap2.get(callId) ?? null : null;
+
     return {
       checkoutId: String(c.checkoutId),
       status: c.status,
@@ -705,10 +635,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       callStatus: j ? String(j.status) : null,
       callScheduledFor: j?.scheduledFor ? new Date(j.scheduledFor).toISOString() : null,
       callAttempts: j ? Number(j.attempts ?? 0) : null,
-      callOutcome: j?.outcome ? String(j.outcome) : null,
       providerCallId: j?.providerCallId ? String(j.providerCallId) : null,
       recordingUrl: j?.recordingUrl ? String(j.recordingUrl) : null,
-      endedReason: j?.endedReason ? String(j.endedReason) : null,
+
+      callOutcome: sb?.call_outcome ? String(sb.call_outcome) : null,
+      sentiment: sb?.sentiment ? String(sb.sentiment) : null,
+      buyProbabilityPct:
+        typeof sb?.buy_probability === "number" && Number.isFinite(sb.buy_probability) ? Math.round(sb.buy_probability) : null,
+      disposition: sb?.disposition ? String(sb.disposition) : null,
+      aiStatus: sb?.ai_status ? String(sb.ai_status) : null,
     };
   });
 
@@ -729,6 +664,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     allCheckouts,
   } satisfies LoaderData;
 };
+
+/* =========================
+   Actions (unchanged)
+   ========================= */
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -836,10 +775,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return redirectBack();
 };
 
+/* =========================
+   UI
+   ========================= */
+
 export default function Dashboard() {
   const { shop, stats, recentJobs, currency, vapiConfigured, allCheckouts } = useLoaderData<typeof loader>();
 
-  // ✅ Live revalidate: only when there is activity
   const revalidator = useRevalidator();
   React.useEffect(() => {
     const active = stats.callingNow > 0 || stats.queuedCalls > 0;
@@ -853,7 +795,6 @@ export default function Dashboard() {
   }, [stats.callingNow, stats.queuedCalls, revalidator]);
 
   const [mode, setMode] = React.useState<"calls" | "checkouts">("calls");
-
   const [selectedId, setSelectedId] = React.useState<string | null>(recentJobs?.[0]?.id ?? null);
 
   React.useEffect(() => {
@@ -873,9 +814,9 @@ export default function Dashboard() {
         safeStr(r.customerName).toLowerCase().includes(q) ||
         safeStr(r.cartPreview).toLowerCase().includes(q) ||
         safeStr(r.status).toLowerCase().includes(q) ||
-        safeStr(r.summaryNextAction).toLowerCase().includes(q) ||
-        safeStr(r.summaryReason).toLowerCase().includes(q) ||
-        safeStr(r.outcome).toLowerCase().includes(q)
+        safeStr(r.callOutcome).toLowerCase().includes(q) ||
+        safeStr(r.nextActionText).toLowerCase().includes(q) ||
+        safeStr(r.summaryText).toLowerCase().includes(q)
       );
     });
   }, [recentJobs, q]);
@@ -891,7 +832,8 @@ export default function Dashboard() {
         safeStr(c.phone).toLowerCase().includes(q) ||
         safeStr(c.email).toLowerCase().includes(q) ||
         safeStr(c.callStatus).toLowerCase().includes(q) ||
-        safeStr(c.callOutcome).toLowerCase().includes(q)
+        safeStr(c.callOutcome).toLowerCase().includes(q) ||
+        safeStr(c.aiStatus).toLowerCase().includes(q)
       );
     });
   }, [allCheckouts, q]);
@@ -1081,7 +1023,7 @@ export default function Dashboard() {
           }}
         >
           <div style={{ maxHeight: 650, overflow: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1320 }}>
               <thead>
                 <tr>
                   <th style={headerCell}>Checkout</th>
@@ -1092,7 +1034,9 @@ export default function Dashboard() {
                   <th style={headerCell}>Cart</th>
                   <th style={headerCell}>Updated</th>
                   <th style={headerCell}>Call</th>
+                  <th style={headerCell}>AI</th>
                   <th style={headerCell}>Outcome</th>
+                  <th style={headerCell}>Buy</th>
                   <th style={headerCell}>Recording</th>
                 </tr>
               </thead>
@@ -1128,21 +1072,9 @@ export default function Dashboard() {
                     </td>
                     <td style={cell}>{formatWhen(c.updatedAt)}</td>
                     <td style={cell}>{c.callStatus ? <StatusPill status={c.callStatus} /> : <Pill>—</Pill>}</td>
-                    <td style={{ ...cell, maxWidth: 420 }}>
-                      <span
-                        title={c.callOutcome ?? ""}
-                        style={{
-                          display: "inline-block",
-                          maxWidth: 420,
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          fontWeight: 900,
-                        }}
-                      >
-                        {c.callOutcome ?? "—"}
-                      </span>
-                    </td>
+                    <td style={cell}><AiStatusPill status={c.aiStatus} err={null} /></td>
+                    <td style={cell}><OutcomePill outcome={c.callOutcome} /></td>
+                    <td style={cell}><BuyPill pct={c.buyProbabilityPct} /></td>
                     <td style={cell}>
                       {c.recordingUrl ? (
                         <a href={c.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
@@ -1161,7 +1093,7 @@ export default function Dashboard() {
           </div>
         </div>
       ) : (
-        /* ========================= CALLS VIEW (your original UI) ========================= */
+        /* ========================= CALLS VIEW ========================= */
         <div
           style={{
             marginTop: 12,
@@ -1184,19 +1116,20 @@ export default function Dashboard() {
             }}
           >
             <div style={{ maxHeight: 520, overflow: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1180 }}>
                 <thead>
                   <tr>
                     <th style={headerCell}>Checkout</th>
                     <th style={headerCell}>Customer</th>
                     <th style={headerCell}>Cart</th>
                     <th style={headerCell}>Status</th>
+                    <th style={headerCell}>AI</th>
+                    <th style={headerCell}>Outcome</th>
                     <th style={headerCell}>Scheduled</th>
                     <th style={headerCell}>Attempts</th>
                     <th style={headerCell}>Answered</th>
                     <th style={headerCell}>Disposition</th>
                     <th style={headerCell}>Buy</th>
-                    <th style={headerCell}>Churn</th>
                   </tr>
                 </thead>
 
@@ -1234,9 +1167,19 @@ export default function Dashboard() {
                         <td style={cell}>
                           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                             <StatusPill status={j.status} />
-                            {cleanSentiment(j.analysis?.sentiment ?? j.sentiment) ? (
-                              <Pill title="Sentiment">{String(cleanSentiment(j.analysis?.sentiment ?? j.sentiment)).toUpperCase()}</Pill>
-                            ) : null}
+                            {j.sentiment ? <Pill title="Sentiment">{j.sentiment.toUpperCase()}</Pill> : null}
+                          </div>
+                        </td>
+
+                        <td style={cell}>
+                          <AiStatusPill status={j.sb?.ai_status ?? null} err={j.sb?.ai_error ?? null} />
+                        </td>
+
+                        <td style={cell}>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                            <OutcomePill outcome={j.callOutcome} />
+                            {j.humanIntervention === true ? <Pill tone="amber" title="Needs human takeover">HUMAN</Pill> : null}
+                            {j.discountSuggest === true ? <Pill tone="blue" title="AI suggests discount">DISC</Pill> : null}
                           </div>
                         </td>
 
@@ -1250,18 +1193,9 @@ export default function Dashboard() {
                         </td>
 
                         <td style={cell}>{j.attempts}</td>
-                        <td style={cell}>
-                          <AnsweredPill answered={j.answered} />
-                        </td>
-                        <td style={cell}>
-                          <DispositionPill d={j.disposition} />
-                        </td>
-                        <td style={cell}>
-                          <PercentPill label="Buy" value={j.buyProbability} tone="green" />
-                        </td>
-                        <td style={cell}>
-                          <PercentPill label="Churn" value={j.churnProbability} tone="red" />
-                        </td>
+                        <td style={cell}><AnsweredPill answered={j.answeredFlag} /></td>
+                        <td style={cell}><DispositionPill d={j.disposition} /></td>
+                        <td style={cell}><BuyPill pct={j.buyProbabilityPct} /></td>
                       </tr>
                     );
                   })}
@@ -1288,7 +1222,7 @@ export default function Dashboard() {
             <div style={{ padding: 14, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
                 <div style={{ display: "grid", gap: 4 }}>
-                  <div style={{ fontSize: 13, fontWeight: 1000, color: "rgba(17,24,39,0.80)" }}>Call details</div>
+                  <div style={{ fontSize: 13, fontWeight: 1000, color: "rgba(17,24,39,0.80)" }}>Call intelligence</div>
                   <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(17,24,39,0.45)" }}>
                     {selected ? `Created ${formatWhen(selected.createdAt)}` : "Select a row"}
                   </div>
@@ -1297,7 +1231,7 @@ export default function Dashboard() {
                 {selected ? (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
                     <StatusPill status={selected.status} />
-                    <AnsweredPill answered={selected.answered} />
+                    <OutcomePill outcome={selected.callOutcome} />
                   </div>
                 ) : null}
               </div>
@@ -1306,7 +1240,7 @@ export default function Dashboard() {
             <div style={{ padding: 14, display: "grid", gap: 12 }}>
               {!selected ? (
                 <div style={{ color: "rgba(17,24,39,0.45)", fontWeight: 950 }}>
-                  Select a job to see summary, tags, transcript and actions.
+                  Select a job to see AI outcome, next step, objections, and follow-up.
                 </div>
               ) : (
                 <>
@@ -1314,28 +1248,30 @@ export default function Dashboard() {
                     <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Key</div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <Pill title="Checkout ID">{selected.checkoutId}</Pill>
-                      {selected.providerCallId ? <Pill title="Provider call id">{selected.providerCallId.slice(0, 14)}…</Pill> : null}
-                      {selected.endedReason ? <Pill title="Why call ended">{selected.endedReason}</Pill> : null}
+                      {selected.providerCallId ? <Pill title="Vapi call id">{selected.providerCallId.slice(0, 14)}…</Pill> : null}
+                      {selected.endedReason ? <Pill title="Ended reason">{selected.endedReason}</Pill> : null}
+                      <AiStatusPill status={selected.sb?.ai_status ?? null} err={selected.sb?.ai_error ?? null} />
                     </div>
                   </div>
 
                   <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Insights</div>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Signals</div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <AnsweredPill answered={selected.answeredFlag} />
                       <DispositionPill d={selected.disposition} />
-                      <PercentPill label="Buy" value={selected.buyProbability} tone="green" />
-                      <PercentPill label="Churn" value={selected.churnProbability} tone="red" />
-                      {cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment) ? (
-                        <Pill title="Sentiment">{String(cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment)).toUpperCase()}</Pill>
-                      ) : null}
-                      {typeof selected.analysis?.confidence === "number" ? (
-                        <Pill title="Model confidence">{Math.round(clamp01(selected.analysis.confidence) * 100)}% conf</Pill>
+                      <BuyPill pct={selected.buyProbabilityPct} />
+                      {selected.sentiment ? <Pill title="Sentiment">{selected.sentiment.toUpperCase()}</Pill> : null}
+                      {selected.humanIntervention === true ? <Pill tone="amber">HUMAN TAKEOVER</Pill> : null}
+                      {selected.discountSuggest === true ? (
+                        <Pill tone="blue" title={selected.discountPercent != null ? `Suggest ${selected.discountPercent}%` : ""}>
+                          DISCOUNT SUGGESTED
+                        </Pill>
                       ) : null}
                     </div>
 
                     {selected.tags.length ? (
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {selected.tags.slice(0, 10).map((t) => (
+                        {selected.tags.slice(0, 12).map((t) => (
                           <Pill key={t} title="Tag">{t}</Pill>
                         ))}
                       </div>
@@ -1343,7 +1279,7 @@ export default function Dashboard() {
                   </div>
 
                   <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Outcome</div>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Summary</div>
                     <div
                       style={{
                         border: "1px solid rgba(0,0,0,0.10)",
@@ -1356,24 +1292,7 @@ export default function Dashboard() {
                         whiteSpace: "pre-wrap",
                       }}
                     >
-                      {selected.outcome ?? "—"}
-                    </div>
-                  </div>
-
-                  <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>What happened</div>
-                    <div
-                      style={{
-                        border: "1px solid rgba(0,0,0,0.10)",
-                        borderRadius: 14,
-                        padding: 10,
-                        fontWeight: 900,
-                        color: "rgba(17,24,39,0.78)",
-                        lineHeight: 1.35,
-                        background: "rgba(0,0,0,0.02)",
-                      }}
-                    >
-                      {selected.summaryReason ?? "—"}
+                      {selected.summaryText ?? "—"}
                     </div>
                   </div>
 
@@ -1388,14 +1307,15 @@ export default function Dashboard() {
                         color: "rgba(30,58,138,0.92)",
                         lineHeight: 1.35,
                         background: "rgba(59,130,246,0.06)",
+                        whiteSpace: "pre-wrap",
                       }}
                     >
-                      {selected.summaryNextAction ?? "—"}
+                      {selected.nextActionText ?? "—"}
                     </div>
                   </div>
 
                   <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Suggested follow-up message</div>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Suggested follow-up (email)</div>
                     <div
                       style={{
                         border: "1px solid rgba(0,0,0,0.10)",
@@ -1408,27 +1328,24 @@ export default function Dashboard() {
                         whiteSpace: "pre-wrap",
                       }}
                     >
-                      {selected.summaryText ?? "—"}
+                      {selected.followUpText ?? "—"}
                     </div>
 
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <SoftButton
                         type="button"
-                        onClick={() => copy(selected.summaryText ?? "")}
-                        disabled={!selected.summaryText}
-                        style={!selected.summaryText ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+                        onClick={() => copy(selected.followUpText ?? "")}
+                        disabled={!selected.followUpText}
+                        style={!selected.followUpText ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
                       >
                         Copy follow-up
                       </SoftButton>
 
-                      <SoftButton
-                        type="button"
-                        onClick={() => copy(selected.transcript ?? "")}
-                        disabled={!selected.transcript}
-                        style={!selected.transcript ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-                      >
-                        Copy transcript
-                      </SoftButton>
+                      {selected.sb?.human_intervention_reason ? (
+                        <SoftButton type="button" onClick={() => copy(String(selected.sb?.human_intervention_reason ?? ""))}>
+                          Copy human reason
+                        </SoftButton>
+                      ) : null}
 
                       {selected.recordingUrl ? (
                         <a href={selected.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
@@ -1442,6 +1359,49 @@ export default function Dashboard() {
                     </div>
                   </div>
 
+                  {/* Objections / Issues */}
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Objections / Issues</div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div
+                        style={{
+                          border: "1px solid rgba(0,0,0,0.10)",
+                          borderRadius: 14,
+                          padding: 10,
+                          fontWeight: 900,
+                          color: "rgba(17,24,39,0.78)",
+                          background: "rgba(0,0,0,0.02)",
+                          whiteSpace: "pre-wrap",
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>OBJECTIONS</div>
+                        {Array.isArray(selected.sb?.objections) && selected.sb!.objections!.length
+                          ? selected.sb!.objections!.slice(0, 8).join("\n")
+                          : "—"}
+                      </div>
+
+                      <div
+                        style={{
+                          border: "1px solid rgba(0,0,0,0.10)",
+                          borderRadius: 14,
+                          padding: 10,
+                          fontWeight: 900,
+                          color: "rgba(17,24,39,0.78)",
+                          background: "rgba(0,0,0,0.02)",
+                          whiteSpace: "pre-wrap",
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>ISSUES TO FIX</div>
+                        {Array.isArray(selected.sb?.issues_to_fix) && selected.sb!.issues_to_fix!.length
+                          ? selected.sb!.issues_to_fix!.slice(0, 8).join("\n")
+                          : "—"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Manual */}
                   <div style={{ display: "grid", gap: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Manual</div>
                     <Form method="post">
@@ -1465,8 +1425,9 @@ export default function Dashboard() {
                     </Form>
                   </div>
 
+                  {/* Raw AI payload */}
                   <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Raw</div>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>AI raw</div>
                     <div
                       style={{
                         border: "1px solid rgba(0,0,0,0.10)",
@@ -1482,7 +1443,7 @@ export default function Dashboard() {
                         whiteSpace: "pre-wrap",
                       }}
                     >
-                      {selected.analysisJson ?? selected.outcome ?? "—"}
+                      {selected.sb?.ai_insights ? JSON.stringify(selected.sb.ai_insights, null, 2) : "—"}
                     </div>
                   </div>
                 </>
