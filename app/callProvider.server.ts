@@ -30,8 +30,9 @@ type ExtrasRow = {
 };
 
 function clamp(n: number, min: number, max: number) {
-  if (!Number.isFinite(n)) return min;
-  return Math.max(min, Math.min(max, n));
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.max(min, Math.min(max, x));
 }
 
 function pickTone(v: any): Tone {
@@ -48,7 +49,8 @@ function pickGoal(v: any): Goal {
 
 function pickOfferRule(v: any): OfferRule {
   const s = String(v ?? "").trim().toLowerCase();
-  if (s === "price_objection" || s === "after_first_objection" || s === "always" || s === "ask_only") return s as OfferRule;
+  if (s === "price_objection" || s === "after_first_objection" || s === "always" || s === "ask_only")
+    return s as OfferRule;
   return "ask_only";
 }
 
@@ -119,12 +121,11 @@ function offerGuidance(args: {
       ? "Offer only if the objection is price/cost."
       : "Offer only if the customer explicitly asks for a discount/coupon.";
 
-  const discount =
-    args.discountEnabled
-      ? `Discount: allowed up to ${args.maxDiscountPercent}% max. Do NOT exceed. Coupon prefix: ${
-          args.couponPrefix ? args.couponPrefix : "none"
-        }. Coupon validity: ${args.couponValidityHours} hours.`
-      : "Discount: disabled.";
+  const discount = args.discountEnabled
+    ? `Discount: allowed up to ${args.maxDiscountPercent}% max. Do NOT exceed. Coupon prefix: ${
+        args.couponPrefix ? args.couponPrefix : "none"
+      }. Coupon validity: ${args.couponValidityHours} hours.`
+    : "Discount: disabled.";
 
   const ship = args.freeShippingEnabled
     ? "Free shipping: allowed as alternative offer (use it instead of discount when appropriate)."
@@ -137,7 +138,11 @@ function offerGuidance(args: {
 - ${ship}`;
 }
 
-function followupGuidance(args: { followupEmailEnabled: boolean; followupSmsEnabled: boolean; maxFollowupQuestions: number }) {
+function followupGuidance(args: {
+  followupEmailEnabled: boolean;
+  followupSmsEnabled: boolean;
+  maxFollowupQuestions: number;
+}) {
   const channels: string[] = [];
   if (args.followupEmailEnabled) channels.push("email");
   if (args.followupSmsEnabled) channels.push("sms");
@@ -236,15 +241,11 @@ ${cartText}
   return `${base}\n\nMerchant instructions (must follow):\n${merchant}`.trim();
 }
 
-export async function startVapiCallForJob(params: {
-  shop: string;
-  callJobId: string;
-}) {
+export async function startVapiCallForJob(params: { shop: string; callJobId: string }) {
   const VAPI_API_KEY = requiredEnv("VAPI_API_KEY");
   const VAPI_ASSISTANT_ID = requiredEnv("VAPI_ASSISTANT_ID");
   const VAPI_PHONE_NUMBER_ID = requiredEnv("VAPI_PHONE_NUMBER_ID");
   const VAPI_SERVER_URL = requiredEnv("VAPI_SERVER_URL");
-  const VAPI_SERVER_SECRET = requiredEnv("VAPI_SERVER_SECRET");
 
   const job = await db.callJob.findFirst({
     where: { id: params.callJobId, shop: params.shop },
@@ -268,7 +269,8 @@ export async function startVapiCallForJob(params: {
     discountEnabled: Boolean(extras?.discount_enabled ?? false),
     maxDiscountPercent: clamp(Number(extras?.max_discount_percent ?? 10), 0, 50),
     offerRule: pickOfferRule(extras?.offer_rule ?? "ask_only"),
-    minCartValueForDiscount: extras?.min_cart_value_for_discount == null ? null : Number(extras.min_cart_value_for_discount),
+    minCartValueForDiscount:
+      extras?.min_cart_value_for_discount == null ? null : Number(extras.min_cart_value_for_discount),
     couponPrefix: (extras?.coupon_prefix ?? "").trim() ? String(extras?.coupon_prefix).trim() : null,
     couponValidityHours: clamp(Number(extras?.coupon_validity_hours ?? 24), 1, 168),
     freeShippingEnabled: Boolean(extras?.free_shipping_enabled ?? false),
@@ -291,8 +293,7 @@ export async function startVapiCallForJob(params: {
     playbook,
   });
 
-  // DO NOT increment attempts here.
-  // Attempts must be incremented exactly once in the runner lock (/api/run-calls).
+  // Attempts increment happens in /app (run_jobs/manual_call lock)
   await db.callJob.update({
     where: { id: job.id },
     data: {
@@ -315,9 +316,6 @@ export async function startVapiCallForJob(params: {
       phoneNumberId: VAPI_PHONE_NUMBER_ID,
       assistantId: VAPI_ASSISTANT_ID,
 
-      // USER SETTINGS -> VAPI (as requested)
-      maxCallSeconds: playbook.maxCallSeconds,
-
       customer: {
         number: job.phone,
         name: checkout.customerName ?? undefined,
@@ -337,18 +335,9 @@ export async function startVapiCallForJob(params: {
           ],
         },
 
-        // webhook (assistant-level)
+        // ✅ Supabase Edge Function webhook
         serverUrl: webhookUrl,
-        serverAuthentication: {
-          type: "bearer",
-          token: VAPI_SERVER_SECRET,
-          headerName: "x-tool-secret",
-        },
-        serverMessages: [
-          "status-update",
-          "end-of-call-report",
-          'transcript[transcriptType="final"]',
-        ],
+        serverMessages: ["status-update", "end-of-call-report", 'transcript[transcriptType="final"]'],
 
         metadata: {
           shop: params.shop,
@@ -357,7 +346,6 @@ export async function startVapiCallForJob(params: {
         },
       },
 
-      // optional top-level metadata too (safe)
       metadata: {
         shop: params.shop,
         callJobId: job.id,
@@ -397,7 +385,7 @@ export async function createVapiCallForJob(params: { shop: string; callJobId: st
   return startVapiCallForJob(params);
 }
 
-export async function placeCall(params: {
+export async function placeCall(_params: {
   shop: string;
   phone: string;
   checkoutId: string;
