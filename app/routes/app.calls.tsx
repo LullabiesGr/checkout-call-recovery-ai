@@ -12,26 +12,20 @@ import {
 } from "../callRecovery.server";
 import { createVapiCallForJob } from "../callProvider.server";
 
+import {
+  buildCartPreview,
+  fetchSupabaseSummaries,
+  formatWhen,
+  isVapiConfiguredFromEnv,
+  pickRecordingUrl,
+  safeStr,
+} from "../lib/callInsights.server";
+
+
 
 /* ---------- helpers (kept local to keep app._index light) ---------- */
 
-function safeStr(v: any) {
-  return v == null ? "" : String(v);
-}
 
-function formatWhen(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString();
-}
-
-function isVapiConfiguredFromEnv() {
-  const assistantId = process.env.VAPI_ASSISTANT_ID?.trim();
-  const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID?.trim();
-  const apiKey = process.env.VAPI_API_KEY?.trim();
-  const serverUrl = process.env.VAPI_SERVER_URL?.trim();
-  return Boolean(apiKey) && Boolean(assistantId) && Boolean(phoneNumberId) && Boolean(serverUrl);
-}
 
 type SupabaseCallSummary = {
   call_id: string;
@@ -71,91 +65,7 @@ function cleanIdList(values: string[]) {
   return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
 }
 
-async function fetchSupabaseSummaries(opts: {
-  shop: string;
-  callIds?: string[];
-  callJobIds?: string[];
-  checkoutIds?: string[];
-}): Promise<Map<string, SupabaseCallSummary>> {
-  const out = new Map<string, SupabaseCallSummary>();
 
-  const url = process.env.SUPABASE_URL?.trim();
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-  if (!url || !key) return out;
-
-  const callIds = cleanIdList(opts.callIds ?? []);
-  const callJobIds = cleanIdList(opts.callJobIds ?? []);
-  const checkoutIds = cleanIdList(opts.checkoutIds ?? []);
-  if (!callIds.length && !callJobIds.length && !checkoutIds.length) return out;
-
-  const select = [
-    "call_id",
-    "call_job_id",
-    "checkout_id",
-    "latest_status",
-    "ended_reason",
-    "recording_url",
-    "stereo_recording_url",
-    "log_url",
-    "transcript",
-    "call_outcome",
-    "disposition",
-    "answered",
-    "voicemail",
-    "sentiment",
-    "tone",
-    "buy_probability",
-    "tags",
-    "tagcsv",
-    "summary",
-    "summary_clean",
-    "next_best_action",
-    "best_next_action",
-    "follow_up_message",
-    "ai_status",
-    "ai_error",
-    "ai_processed_at",
-  ].join(",");
-
-  const orParts: string[] = [];
-  if (callIds.length) orParts.push(`call_id.in.(${callIds.join(",")})`);
-  if (callJobIds.length) orParts.push(`call_job_id.in.(${callJobIds.join(",")})`);
-  if (checkoutIds.length) orParts.push(`checkout_id.in.(${checkoutIds.join(",")})`);
-
-  const params = new URLSearchParams();
-  params.set("select", select);
-  params.set("or", `(${orParts.join(",")})`);
-
-  const withShop = new URLSearchParams(params);
-  withShop.set("shop", `eq.${opts.shop}`);
-
-  async function doFetch(p: URLSearchParams) {
-    const endpoint = `${url}/rest/v1/vapi_call_summaries?${p.toString()}`;
-    const r = await fetch(endpoint, {
-      method: "GET",
-      headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" },
-    });
-    if (!r.ok) return [];
-    const data = (await r.json()) as any;
-    return Array.isArray(data) ? (data as SupabaseCallSummary[]) : [];
-  }
-
-  let data = await doFetch(withShop);
-  if (data.length === 0) data = await doFetch(params);
-
-  for (const row of data) {
-    if (row.call_id) out.set(`call:${String(row.call_id)}`, row);
-    if (row.call_job_id) out.set(`job:${String(row.call_job_id)}`, row);
-    if (row.checkout_id) out.set(`co:${String(row.checkout_id)}`, row);
-  }
-
-  return out;
-}
-
-function pickRecordingUrl(sb: SupabaseCallSummary | null): string | null {
-  if (!sb) return null;
-  return (sb.recording_url || sb.stereo_recording_url || sb.log_url) ?? null;
-}
 
 function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
   const tone = props.tone ?? "neutral";

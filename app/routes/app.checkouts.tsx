@@ -6,35 +6,17 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { ensureSettings } from "../callRecovery.server";
 
-function safeStr(v: any) {
-  return v == null ? "" : String(v);
-}
+import {
+  buildCartPreview,
+  fetchSupabaseSummaries,
+  formatWhen,
+  pickLatestJobByCheckout,
+  pickRecordingUrl,
+  safeStr,
+} from "../lib/callInsights.server";
 
-function formatWhen(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString();
-}
 
-function buildCartPreview(itemsJson?: string | null): string | null {
-  if (!itemsJson) return null;
-  try {
-    const items = JSON.parse(itemsJson);
-    if (!Array.isArray(items) || items.length === 0) return null;
-    return items
-      .slice(0, 3)
-      .map((it: any) => {
-        const title = String(it?.title ?? "").trim();
-        const qty = Number(it?.quantity ?? 1);
-        if (!title) return null;
-        return `${title} x${Number.isFinite(qty) ? qty : 1}`;
-      })
-      .filter(Boolean)
-      .join(", ");
-  } catch {
-    return null;
-  }
-}
+
 
 type SupabaseCallSummary = {
   call_id: string;
@@ -58,109 +40,9 @@ function cleanIdList(values: string[]) {
   return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
 }
 
-async function fetchSupabaseSummaries(opts: {
-  shop: string;
-  callIds?: string[];
-  callJobIds?: string[];
-  checkoutIds?: string[];
-}): Promise<Map<string, SupabaseCallSummary>> {
-  const out = new Map<string, SupabaseCallSummary>();
 
-  const url = process.env.SUPABASE_URL?.trim();
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-  if (!url || !key) return out;
 
-  const callIds = cleanIdList(opts.callIds ?? []);
-  const callJobIds = cleanIdList(opts.callJobIds ?? []);
-  const checkoutIds = cleanIdList(opts.checkoutIds ?? []);
-  if (!callIds.length && !callJobIds.length && !checkoutIds.length) return out;
 
-  const select = [
-    "call_id",
-    "call_job_id",
-    "checkout_id",
-    "call_outcome",
-    "buy_probability",
-    "sentiment",
-    "tone",
-    "ai_status",
-    "recording_url",
-    "stereo_recording_url",
-    "log_url",
-  ].join(",");
-
-  const orParts: string[] = [];
-  if (callIds.length) orParts.push(`call_id.in.(${callIds.join(",")})`);
-  if (callJobIds.length) orParts.push(`call_job_id.in.(${callJobIds.join(",")})`);
-  if (checkoutIds.length) orParts.push(`checkout_id.in.(${checkoutIds.join(",")})`);
-
-  const params = new URLSearchParams();
-  params.set("select", select);
-  params.set("or", `(${orParts.join(",")})`);
-
-  const withShop = new URLSearchParams(params);
-  withShop.set("shop", `eq.${opts.shop}`);
-
-  async function doFetch(p: URLSearchParams) {
-    const endpoint = `${url}/rest/v1/vapi_call_summaries?${p.toString()}`;
-    const r = await fetch(endpoint, {
-      method: "GET",
-      headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" },
-    });
-    if (!r.ok) return [];
-    const data = (await r.json()) as any;
-    return Array.isArray(data) ? (data as SupabaseCallSummary[]) : [];
-  }
-
-  let data = await doFetch(withShop);
-  if (data.length === 0) data = await doFetch(params);
-
-  for (const row of data) {
-    if (row.call_id) out.set(`call:${String(row.call_id)}`, row);
-    if (row.call_job_id) out.set(`job:${String(row.call_job_id)}`, row);
-    if (row.checkout_id) out.set(`co:${String(row.checkout_id)}`, row);
-  }
-
-  return out;
-}
-
-function pickRecordingUrl(sb: SupabaseCallSummary | null): string | null {
-  if (!sb) return null;
-  return (sb.recording_url || sb.stereo_recording_url || sb.log_url) ?? null;
-}
-
-function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
-  const tone = props.tone ?? "neutral";
-  const t =
-    tone === "green"
-      ? { bg: "rgba(16,185,129,0.10)", bd: "rgba(16,185,129,0.25)", tx: "#065f46" }
-      : tone === "blue"
-      ? { bg: "rgba(59,130,246,0.10)", bd: "rgba(59,130,246,0.25)", tx: "#1e3a8a" }
-      : tone === "amber"
-      ? { bg: "rgba(245,158,11,0.10)", bd: "rgba(245,158,11,0.25)", tx: "#92400e" }
-      : tone === "red"
-      ? { bg: "rgba(239,68,68,0.10)", bd: "rgba(239,68,68,0.25)", tx: "#7f1d1d" }
-      : { bg: "rgba(0,0,0,0.04)", bd: "rgba(0,0,0,0.10)", tx: "rgba(0,0,0,0.75)" };
-
-  return (
-    <span
-      title={props.title}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        padding: "3px 10px",
-        borderRadius: 999,
-        border: `1px solid ${t.bd}`,
-        background: t.bg,
-        color: t.tx,
-        fontWeight: 950,
-        fontSize: 12,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {props.children}
-    </span>
-  );
 }
 
 function CheckoutStatusPill({ status }: { status: string }) {
@@ -193,22 +75,7 @@ type LoaderData = {
   rows: Row[];
 };
 
-function pickLatestJobByCheckout(jobs: Array<any>) {
-  const map = new Map<string, any>();
-  for (const j of jobs) {
-    const key = String(j.checkoutId ?? "");
-    if (!key) continue;
-    const prev = map.get(key);
-    if (!prev) {
-      map.set(key, j);
-      continue;
-    }
-    const a = new Date(prev.createdAt).getTime();
-    const b = new Date(j.createdAt).getTime();
-    if (Number.isFinite(b) && b > a) map.set(key, j);
-  }
-  return map;
-}
+
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
