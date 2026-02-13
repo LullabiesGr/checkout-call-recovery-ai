@@ -10,11 +10,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
 };
 
+function safeSearch(): string {
+  if (typeof window === "undefined") return "";
+  const s = window.location.search || "";
+  // keep embedded params (shop/host/embedded/etc)
+  return s.startsWith("?") ? s : s ? `?${s}` : "";
+}
+
+function withSearch(path: string): string {
+  const s = safeSearch();
+  if (!s) return path;
+  // avoid double ?
+  if (path.includes("?")) return path;
+  return `${path}${s}`;
+}
+
 function NavItem(props: { href: string; label: string; active?: boolean }) {
   const { href, label, active } = props;
+  const finalHref = withSearch(href);
+
   return (
     <a
-      href={href}
+      href={finalHref}
       style={{
         display: "flex",
         alignItems: "center",
@@ -26,7 +43,9 @@ function NavItem(props: { href: string; label: string; active?: boolean }) {
         background: active ? "rgba(59,130,246,0.10)" : "transparent",
         fontWeight: 950,
         fontSize: 13,
-        border: active ? "1px solid rgba(59,130,246,0.18)" : "1px solid transparent",
+        border: active
+          ? "1px solid rgba(59,130,246,0.18)"
+          : "1px solid transparent",
       }}
     >
       <span
@@ -34,7 +53,9 @@ function NavItem(props: { href: string; label: string; active?: boolean }) {
           width: 8,
           height: 8,
           borderRadius: 999,
-          background: active ? "rgba(59,130,246,0.85)" : "rgba(17,24,39,0.20)",
+          background: active
+            ? "rgba(59,130,246,0.85)"
+            : "rgba(17,24,39,0.20)",
         }}
       />
       <span>{label}</span>
@@ -45,12 +66,13 @@ function NavItem(props: { href: string; label: string; active?: boolean }) {
 export default function App() {
   const { apiKey } = useLoaderData<typeof loader>();
 
-  // simple active detection (no hooks from router used to avoid breaking)
   const path =
     typeof window !== "undefined" ? window.location.pathname : "/app";
   const isDash = path === "/app" || path === "/app/";
   const isAdditional = path.startsWith("/app/additional");
   const isSettings = path.startsWith("/app/settings");
+
+  const pageTitle = isDash ? "Dashboard" : isAdditional || isSettings ? "Settings" : "App";
 
   return (
     <AppProvider embedded apiKey={apiKey}>
@@ -100,10 +122,22 @@ export default function App() {
               AI
             </div>
             <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
-              <div style={{ fontWeight: 1000, fontSize: 13, color: "rgba(17,24,39,0.92)" }}>
+              <div
+                style={{
+                  fontWeight: 1000,
+                  fontSize: 13,
+                  color: "rgba(17,24,39,0.92)",
+                }}
+              >
                 AI Checkout Call Recovery
               </div>
-              <div style={{ fontWeight: 850, fontSize: 11, color: "rgba(17,24,39,0.45)" }}>
+              <div
+                style={{
+                  fontWeight: 850,
+                  fontSize: 11,
+                  color: "rgba(17,24,39,0.45)",
+                }}
+              >
                 Embedded Shopify app
               </div>
             </div>
@@ -113,12 +147,16 @@ export default function App() {
             <NavItem href="/app" label="Dashboard" active={isDash} />
             <NavItem href="/app" label="Call Insights" active={false} />
             <NavItem href="/app" label="Call Jobs" active={false} />
-            <NavItem href="/app/additional" label="Settings" active={isAdditional || isSettings} />
+            <NavItem
+              href="/app/additional"
+              label="Settings"
+              active={isAdditional || isSettings}
+            />
           </div>
 
           <div style={{ marginTop: "auto", padding: 8 }}>
             <a
-              href="/app/additional"
+              href={withSearch("/app/additional")}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -160,9 +198,18 @@ export default function App() {
               gap: 12,
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-              <div style={{ fontWeight: 1000, color: "rgba(17,24,39,0.92)" }}>
-                Dashboard
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                minWidth: 0,
+              }}
+            >
+              <div
+                style={{ fontWeight: 1000, color: "rgba(17,24,39,0.92)" }}
+              >
+                {pageTitle}
               </div>
               <div
                 style={{
@@ -190,7 +237,13 @@ export default function App() {
                   background: "rgba(0,0,0,0.03)",
                 }}
               />
-              <div style={{ fontWeight: 950, fontSize: 13, color: "rgba(17,24,39,0.78)" }}>
+              <div
+                style={{
+                  fontWeight: 950,
+                  fontSize: 13,
+                  color: "rgba(17,24,39,0.78)",
+                }}
+              >
                 Account
               </div>
             </div>
