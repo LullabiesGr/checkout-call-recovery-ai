@@ -188,35 +188,86 @@ function cleanSentiment(v?: string | null) {
 }
 
 function pickAnalysis(j: any): Analysis | null {
-  const a = j.analysisJson ? tryParseJsonObject(j.analysisJson) : null;
-  if (!a) return null;
+  // Priority:
+  // 1) analysisJson column (preferred structured)
+  // 2) outcome column if it contains JSON (your current reality)
+  // 3) reason/nextAction/followUp columns if they are plain strings (not JSON blobs)
 
-  const tags = Array.isArray(a.tags) ? a.tags.map(normalizeTag).filter(Boolean).slice(0, 12) : [];
-  const sentiment = cleanSentiment(a.sentiment) ?? undefined;
-  const confidence = typeof a.confidence === "number" ? clamp01(a.confidence) : undefined;
+  const a1 = j.analysisJson ? tryParseJsonObject(j.analysisJson) : null;
+  const a2 = !a1 && j.outcome ? tryParseJsonObject(j.outcome) : null;
+  const a = a1 || a2;
 
-  const buyProbability =
-    typeof a.buyProbability === "number" ? clamp01(a.buyProbability) : undefined;
-  const churnProbability =
-    typeof a.churnProbability === "number" ? clamp01(a.churnProbability) : undefined;
+  // If we have any JSON object, normalize it to Analysis
+  const fromJson = (obj: any): Analysis | null => {
+    if (!obj || typeof obj !== "object") return null;
 
-  const disposition =
-    safeStr(a.disposition).trim() || "unknown";
+    const tags = Array.isArray(obj.tags)
+      ? obj.tags.map(normalizeTag).filter(Boolean).slice(0, 12)
+      : [];
 
-  return {
-    sentiment,
-    tags,
-    reason: typeof a.reason === "string" ? a.reason.trim() : undefined,
-    nextAction: typeof a.nextAction === "string" ? a.nextAction.trim() : undefined,
-    followUp: typeof a.followUp === "string" ? a.followUp.trim() : undefined,
-    confidence,
-    answered: typeof a.answered === "boolean" ? a.answered : undefined,
-    disposition: (disposition as any) ?? "unknown",
-    buyProbability,
-    churnProbability,
-    shortSummary: typeof a.shortSummary === "string" ? a.shortSummary.trim() : undefined,
+    const sentiment = cleanSentiment(obj.sentiment) ?? undefined;
+    const confidence = typeof obj.confidence === "number" ? clamp01(obj.confidence) : undefined;
+
+    const buyProbability =
+      typeof obj.buyProbability === "number" ? clamp01(obj.buyProbability) : undefined;
+
+    const churnProbability =
+      typeof obj.churnProbability === "number" ? clamp01(obj.churnProbability) : undefined;
+
+    const dispositionRaw = safeStr(obj.disposition).trim().toLowerCase();
+    const disposition =
+      ["interested","needs_support","call_back_later","not_interested","wrong_number","unknown"].includes(dispositionRaw)
+        ? (dispositionRaw as any)
+        : undefined;
+
+    return {
+      sentiment,
+      tags,
+      reason: typeof obj.reason === "string" ? obj.reason.trim() : undefined,
+      nextAction: typeof obj.nextAction === "string" ? obj.nextAction.trim() : undefined,
+      followUp: typeof obj.followUp === "string" ? obj.followUp.trim() : undefined,
+      confidence,
+      answered: typeof obj.answered === "boolean" ? obj.answered : undefined,
+      disposition,
+      buyProbability,
+      churnProbability,
+      shortSummary: typeof obj.shortSummary === "string" ? obj.shortSummary.trim() : undefined,
+    };
   };
+
+  const parsed = a ? fromJson(a) : null;
+
+  // If no JSON found, fall back to columns (ONLY if they are plain strings)
+  if (!parsed) {
+    const reasonPlain =
+      j.reason && !tryParseJsonObject(j.reason) ? safeStr(j.reason).trim() : "";
+
+    const nextActionPlain =
+      j.nextAction && !tryParseJsonObject(j.nextAction) ? safeStr(j.nextAction).trim() : "";
+
+    const followUpPlain =
+      j.followUp && !tryParseJsonObject(j.followUp) ? safeStr(j.followUp).trim() : "";
+
+    const tags = splitTags(j.tagsCsv);
+
+    const sentiment = cleanSentiment(j.sentiment) ?? undefined;
+
+    if (!reasonPlain && !nextActionPlain && !followUpPlain && tags.length === 0 && !sentiment) {
+      return null;
+    }
+
+    return {
+      sentiment,
+      tags,
+      reason: reasonPlain || undefined,
+      nextAction: nextActionPlain || undefined,
+      followUp: followUpPlain || undefined,
+    };
+  }
+
+  return parsed;
 }
+
 
 function deriveFromJob(j: any, analysis: Analysis | null) {
   const ended = safeStr(j.endedReason).toLowerCase();
@@ -300,19 +351,21 @@ function deriveFromJob(j: any, analysis: Analysis | null) {
           ? safeStr(j.reason).trim()
           : null;
 
-  const nextAction =
+    const nextAction =
     analysis?.nextAction?.trim()
       ? analysis.nextAction.trim()
-      : j.nextAction
+      : j.nextAction && !tryParseJsonObject(j.nextAction)
         ? safeStr(j.nextAction).trim()
         : null;
 
-  const summaryText =
+
+    const summaryText =
     analysis?.followUp?.trim()
       ? analysis.followUp.trim()
-      : j.followUp
+      : j.followUp && !tryParseJsonObject(j.followUp)
         ? safeStr(j.followUp).trim()
         : null;
+
 
   return {
     answered,

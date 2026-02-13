@@ -2,7 +2,7 @@
   align-items: center;
   display: flex;
   justify-content: center;
-  height: 100%;
+  min-height: 100vh;
   width: 100%;
   text-align: center;
   padding: 1rem;
@@ -22,6 +22,8 @@
 .content {
   display: grid;
   gap: 2rem;
+  width: 100%;
+  max-width: 48rem;
 }
 
 .form {
@@ -30,22 +32,27 @@
   justify-content: flex-start;
   margin: 0 auto;
   gap: 1rem;
+  width: 100%;
+  max-width: 42rem;
 }
 
 .label {
   display: grid;
   gap: 0.2rem;
-  max-width: 20rem;
+  flex: 1;
   text-align: left;
   font-size: 1rem;
 }
 
 .input {
   padding: 0.4rem;
+  width: 100%;
+  min-width: 0;
 }
 
 .button {
-  padding: 0.4rem;
+  padding: 0.55rem 0.9rem;
+  white-space: nowrap;
 }
 
 .list {
@@ -63,6 +70,15 @@
 }
 
 @media only screen and (max-width: 50rem) {
+  .form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .button {
+    width: 100%;
+  }
+
   .list {
     display: block;
   }
