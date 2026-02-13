@@ -1,14 +1,11 @@
 // app/routes/app.settings.tsx
+import * as React from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Form, useLoaderData, useRouteError } from "react-router";
-import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { ensureSettings } from "../callRecovery.server";
-
-import type { HeadersFunction } from "react-router";
-import { useRouteError } from "react-router";
-import { boundary } from "@shopify/shopify-app-react-router/server";
 
 type LoaderData = {
   shop: string;
@@ -31,10 +28,18 @@ function toInt(v: FormDataEntryValue | null, fallback: number) {
   const n = Number.parseInt(String(v ?? ""), 10);
   return Number.isFinite(n) ? n : fallback;
 }
-
 function toFloat(v: FormDataEntryValue | null, fallback: number) {
   const n = Number.parseFloat(String(v ?? ""));
   return Number.isFinite(n) ? n : fallback;
+}
+
+function safeSearchFromRequest(request: Request) {
+  try {
+    const u = new URL(request.url);
+    return u.search || "";
+  } catch {
+    return "";
+  }
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -46,17 +51,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     shop,
     settings: {
-      enabled: s.enabled,
-      delayMinutes: s.delayMinutes,
-      maxAttempts: s.maxAttempts,
-      retryMinutes: s.retryMinutes,
-      minOrderValue: s.minOrderValue,
-      currency: s.currency,
-      callWindowStart: (s as any).callWindowStart ?? "09:00",
-      callWindowEnd: (s as any).callWindowEnd ?? "19:00",
-      vapiAssistantId: (s as any).vapiAssistantId ?? null,
-      vapiPhoneNumberId: (s as any).vapiPhoneNumberId ?? null,
-      userPrompt: (s as any).userPrompt ?? null,
+      enabled: Boolean(s.enabled),
+      delayMinutes: Number(s.delayMinutes ?? 30),
+      maxAttempts: Number(s.maxAttempts ?? 2),
+      retryMinutes: Number(s.retryMinutes ?? 180),
+      minOrderValue: Number(s.minOrderValue ?? 0),
+      currency: String(s.currency ?? "USD"),
+      callWindowStart: String((s as any).callWindowStart ?? "09:00"),
+      callWindowEnd: String((s as any).callWindowEnd ?? "19:00"),
+      vapiAssistantId: ((s as any).vapiAssistantId ?? null) as string | null,
+      vapiPhoneNumberId: ((s as any).vapiPhoneNumberId ?? null) as string | null,
+      userPrompt: ((s as any).userPrompt ?? null) as string | null,
     },
   } satisfies LoaderData;
 };
@@ -112,109 +117,229 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } as any,
   });
 
-  return new Response(null, { status: 302, headers: { Location: "/app/settings" } });
+  const search = safeSearchFromRequest(request);
+  return new Response(null, {
+    status: 303,
+    headers: { Location: `/app/settings${search}` },
+  });
 };
+
+function Field(props: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <div style={{ fontWeight: 1000, fontSize: 12, color: "rgba(17,24,39,0.70)" }}>{props.label}</div>
+      {props.children}
+      {props.hint ? (
+        <div style={{ fontWeight: 900, fontSize: 12, color: "rgba(17,24,39,0.45)", lineHeight: 1.35 }}>
+          {props.hint}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      {...props}
+      style={{
+        width: "100%",
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid rgba(0,0,0,0.12)",
+        background: "white",
+        fontWeight: 900,
+        color: "rgba(17,24,39,0.88)",
+        outline: "none",
+        ...(props.style as any),
+      }}
+    />
+  );
+}
+
+function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      {...props}
+      style={{
+        width: "100%",
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid rgba(0,0,0,0.12)",
+        background: "white",
+        fontWeight: 900,
+        color: "rgba(17,24,39,0.88)",
+        outline: "none",
+        resize: "vertical",
+        ...(props.style as any),
+      }}
+    />
+  );
+}
+
+function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
+  const tone = props.tone ?? "neutral";
+  const t =
+    tone === "green"
+      ? { bg: "rgba(16,185,129,0.10)", bd: "rgba(16,185,129,0.25)", tx: "#065f46" }
+      : tone === "blue"
+      ? { bg: "rgba(59,130,246,0.10)", bd: "rgba(59,130,246,0.25)", tx: "#1e3a8a" }
+      : tone === "amber"
+      ? { bg: "rgba(245,158,11,0.10)", bd: "rgba(245,158,11,0.25)", tx: "#92400e" }
+      : tone === "red"
+      ? { bg: "rgba(239,68,68,0.10)", bd: "rgba(239,68,68,0.25)", tx: "#7f1d1d" }
+      : { bg: "rgba(0,0,0,0.04)", bd: "rgba(0,0,0,0.10)", tx: "rgba(0,0,0,0.75)" };
+
+  return (
+    <span
+      title={props.title}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "3px 10px",
+        borderRadius: 999,
+        border: `1px solid ${t.bd}`,
+        background: t.bg,
+        color: t.tx,
+        fontWeight: 950,
+        fontSize: 12,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {props.children}
+    </span>
+  );
+}
 
 export default function SettingsRoute() {
   const { shop, settings } = useLoaderData<typeof loader>();
 
   return (
-    <s-page heading="Settings">
-      <s-card padding="base">
-        <s-stack gap="base">
-          <s-text as="h2" variant="headingMd">Call recovery configuration</s-text>
+    <div style={{ padding: 16, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+          <div style={{ fontWeight: 1100, fontSize: 18, color: "rgba(17,24,39,0.92)" }}>Settings</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <Pill title="Shop">{shop}</Pill>
+            <Pill tone={settings.enabled ? "green" : "neutral"} title="Enabled">
+              {settings.enabled ? "Enabled" : "Disabled"}
+            </Pill>
+          </div>
+        </div>
+      </div>
 
-          <s-paragraph>
-            Store: <s-badge>{shop}</s-badge>
-          </s-paragraph>
+      <div
+        style={{
+          marginTop: 12,
+          border: "1px solid rgba(0,0,0,0.08)",
+          borderRadius: 16,
+          overflow: "hidden",
+          background: "white",
+          boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
+          maxWidth: 980,
+        }}
+      >
+        <div style={{ padding: 14, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+          <div style={{ fontSize: 13, fontWeight: 1100, color: "rgba(17,24,39,0.85)" }}>Call recovery configuration</div>
+          <div style={{ marginTop: 4, fontSize: 12, fontWeight: 900, color: "rgba(17,24,39,0.45)" }}>
+            Controls queue timing, retry policy, and Vapi identifiers.
+          </div>
+        </div>
 
+        <div style={{ padding: 14 }}>
           <Form method="post">
-            <s-stack gap="base">
-              <label>
-                <input type="checkbox" name="enabled" defaultChecked={settings.enabled} />
-                {" "}Enable call recovery
-              </label>
+            <div style={{ display: "grid", gap: 14 }}>
+              <div
+                style={{
+                  border: "1px solid rgba(0,0,0,0.08)",
+                  borderRadius: 14,
+                  padding: 12,
+                  background: "rgba(0,0,0,0.02)",
+                }}
+              >
+                <label style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 1000 }}>
+                  <input type="checkbox" name="enabled" defaultChecked={settings.enabled} />
+                  Enable call recovery
+                </label>
+              </div>
 
-              <label>
-                Delay before first call (minutes)
-                <input name="delayMinutes" defaultValue={settings.delayMinutes} />
-              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+                <Field label="Delay before first call (minutes)" hint="After checkout becomes abandoned.">
+                  <Input name="delayMinutes" defaultValue={settings.delayMinutes} inputMode="numeric" />
+                </Field>
 
-              <label>
-                Max call attempts
-                <input name="maxAttempts" defaultValue={settings.maxAttempts} />
-              </label>
+                <Field label="Min order value" hint="Skip carts below this value.">
+                  <Input name="minOrderValue" defaultValue={settings.minOrderValue} inputMode="decimal" />
+                </Field>
 
-              <label>
-                Retry delay (minutes)
-                <input name="retryMinutes" defaultValue={settings.retryMinutes} />
-              </label>
+                <Field label="Max call attempts" hint="Per checkout.">
+                  <Input name="maxAttempts" defaultValue={settings.maxAttempts} inputMode="numeric" />
+                </Field>
 
-              <label>
-                Min order value
-                <input name="minOrderValue" defaultValue={settings.minOrderValue} />
-              </label>
+                <Field label="Retry delay (minutes)" hint="Delay between attempts when call fails.">
+                  <Input name="retryMinutes" defaultValue={settings.retryMinutes} inputMode="numeric" />
+                </Field>
 
-              <label>
-                Currency
-                <input name="currency" defaultValue={settings.currency} />
-              </label>
+                <Field label="Currency" hint="Used for formatting only. Example: USD, EUR.">
+                  <Input name="currency" defaultValue={settings.currency} />
+                </Field>
+              </div>
 
-              <s-divider />
+              <div style={{ height: 1, background: "rgba(0,0,0,0.06)" }} />
 
-              <s-text as="h3" variant="headingSm">Call window</s-text>
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ fontWeight: 1100, fontSize: 13, color: "rgba(17,24,39,0.85)" }}>Call window</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+                  <Field label="Start (HH:MM)" hint="Local store time. Example: 09:00">
+                    <Input name="callWindowStart" defaultValue={settings.callWindowStart} placeholder="09:00" />
+                  </Field>
 
-              <label>
-                Start (HH:MM)
-                <input name="callWindowStart" defaultValue={settings.callWindowStart} />
-              </label>
+                  <Field label="End (HH:MM)" hint="Local store time. Example: 19:00">
+                    <Input name="callWindowEnd" defaultValue={settings.callWindowEnd} placeholder="19:00" />
+                  </Field>
+                </div>
+              </div>
 
-              <label>
-                End (HH:MM)
-                <input name="callWindowEnd" defaultValue={settings.callWindowEnd} />
-              </label>
+              <div style={{ height: 1, background: "rgba(0,0,0,0.06)" }} />
 
-              <s-divider />
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ fontWeight: 1100, fontSize: 13, color: "rgba(17,24,39,0.85)" }}>Vapi</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+                  <Field label="Assistant ID" hint="Optional: store-level override.">
+                    <Input name="vapiAssistantId" defaultValue={settings.vapiAssistantId ?? ""} />
+                  </Field>
 
-              <s-text as="h3" variant="headingSm">Vapi</s-text>
+                  <Field label="Phone Number ID" hint="Optional: store-level override.">
+                    <Input name="vapiPhoneNumberId" defaultValue={settings.vapiPhoneNumberId ?? ""} />
+                  </Field>
+                </div>
 
-              <label>
-                Assistant ID
-                <input name="vapiAssistantId" defaultValue={settings.vapiAssistantId ?? ""} />
-              </label>
+                <Field
+                  label="Merchant prompt"
+                  hint="Added on top of the default system prompt. Keep it short and strict."
+                >
+                  <TextArea name="userPrompt" defaultValue={settings.userPrompt ?? ""} rows={8} />
+                </Field>
+              </div>
 
-              <label>
-                Phone Number ID
-                <input name="vapiPhoneNumberId" defaultValue={settings.vapiPhoneNumberId ?? ""} />
-              </label>
-
-              <label>
-                Merchant prompt (added on top of our default preprompt)
-                <textarea
-                  name="userPrompt"
-                  defaultValue={settings.userPrompt ?? ""}
-                  rows={8}
-                  style={{ width: "100%" }}
-                />
-              </label>
-
-              <button type="submit">Save</button>
-            </s-stack>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                <button
+                  type="submit"
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(59,130,246,0.30)",
+                    background: "rgba(59,130,246,0.10)",
+                    cursor: "pointer",
+                    fontWeight: 1100,
+                  }}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
           </Form>
-        </s-stack>
-      </s-card>
-    </s-page>
-  );
-}
-
-
-
-export default function SettingsRoute() {
-  return (
-    <div style={{ padding: 16 }}>
-      <div style={{ fontWeight: 1100, fontSize: 18, color: "rgba(17,24,39,0.92)" }}>Settings</div>
-      <div style={{ marginTop: 8, fontWeight: 900, color: "rgba(17,24,39,0.55)" }}>
-        Replace this file with your existing settings screen.
+        </div>
       </div>
     </div>
   );

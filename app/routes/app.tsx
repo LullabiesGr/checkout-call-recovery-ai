@@ -29,14 +29,14 @@ export default function App() {
 
   return (
     <AppProvider embedded apiKey={apiKey}>
-      {/* Shopify classic left sidebar (Admin) */}
+      {/* Shopify Admin left sidebar */}
       <NavMenu>
         <a href={withSearch("/app")} rel="home">
           Dashboard
         </a>
         <a href={withSearch("/app/checkouts")}>Checkouts</a>
         <a href={withSearch("/app/calls")}>Calls</a>
-        <a href={withSearch("/app/additional")}>Settings</a>
+        <a href={withSearch("/app/settings")}>Settings</a>
       </NavMenu>
 
       <Outlet />
