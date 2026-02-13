@@ -15,48 +15,72 @@ import { createVapiCallForJob } from "../callProvider.server";
 /**
  * UPDATED to match the NEW vapi_call_summaries schema (based on your CSV).
  * Keep it permissive so schema additions won't break the app.
+ * NOTE: Some columns may be null depending on pipeline stage.
  */
 type SupabaseCallSummary = {
-  id?: number | string | null;
-  received_at?: string | null;
-
-  // Join keys
-  call_id: string;
+  id?: string;
   shop?: string | null;
-  checkout_id?: string | null;
-  call_job_id?: string | null;
 
-  // Core AI fields
-  tone?: string | null; // sometimes not used
-  summary?: string | null; // new
-  summary_clean?: string | null; // still exists
+  // join keys
+  call_id: string; // Vapi call id
+  call_job_id?: string | null; // Prisma CallJob.id
+  checkout_id?: string | null; // Checkout.checkoutId
 
-  tagcsv?: string | null; // new (CSV)
-  tags?: any; // can be array or null
+  // timestamps
+  received_at?: string | null;
+  last_received_at?: string | null;
+  ai_processed_at?: string | null;
+
+  // status
+  latest_status?: string | null;
+  ended_reason?: string | null;
+
+  // links
+  recording_url?: string | null;
+  stereo_recording_url?: string | null;
+  log_url?: string | null;
+
+  // raw convo artifacts
+  transcript?: string | null;
+  end_of_call_report?: string | null;
+
+  // normalized outcome
+  call_outcome?: string | null;
+  disposition?: string | null;
 
   answered?: boolean | null;
   voicemail?: boolean | null;
 
-  sentiment?: string | null; // can be "positive/neutral/negative" OR custom text
-  disposition?: string | null;
-  call_outcome?: string | null;
-
-  key_quotes_text?: string | null;
-  key_quotes?: any;
-
-  objections_text?: string | null;
-  objections?: any;
-
-  issues_to_fix_text?: string | null;
-  issues_to_fix?: any;
-
-  best_next_action?: string | null; // new
-  next_best_action?: string | null; // old alias still exists
-  follow_up_message?: string | null;
-
+  sentiment?: string | null;
+  tone?: string | null; // sometimes people name it tone
   buy_probability?: number | null;
   customer_intent?: string | null;
 
+  // tags can be json array OR csv string columns
+  tags?: any;
+  tagcsv?: string | null;
+
+  // summaries
+  summary?: string | null;
+  summary_clean?: string | null;
+
+  // next action fields (newer vs older naming)
+  next_best_action?: string | null;
+  best_next_action?: string | null;
+
+  follow_up_message?: string | null;
+
+  // arrays or text
+  key_quotes?: any;
+  key_quotes_text?: string | null;
+
+  objections?: any;
+  objections_text?: string | null;
+
+  issues_to_fix?: any;
+  issues_to_fix_text?: string | null;
+
+  // escalation / discount
   human_intervention?: boolean | null;
   human_intervention_reason?: string | null;
 
@@ -64,29 +88,15 @@ type SupabaseCallSummary = {
   discount_percent?: number | null;
   discount_rationale?: string | null;
 
-  // Call metadata mirrored into summaries table
-  latest_status?: string | null;
-  ended_reason?: string | null;
-  transcript?: string | null;
-  end_of_call_report?: string | null;
-
-  recording_url?: string | null;
-  stereo_recording_url?: string | null;
-  log_url?: string | null;
-
-  // AI processing meta
+  // AI pipeline
   ai_status?: string | null;
   ai_error?: string | null;
-  ai_processed_at?: string | null;
 
-  // Raw payloads
-  structured_outputs?: any;
-  payload?: any;
+  // raw AI payloads
   ai_result?: any;
   ai_insights?: any;
-
-  // Legacy
-  last_received_at?: string | null;
+  payload?: any;
+  structured_outputs?: any;
 };
 
 type Row = {
@@ -264,27 +274,23 @@ function pickLatestJobByCheckout(jobs: Array<any>) {
   return map;
 }
 
-function parseTagsFromSb(sb: SupabaseCallSummary | null | undefined): string[] {
+function parseTags(sb: SupabaseCallSummary | null | undefined): string[] {
   if (!sb) return [];
-  const fromArray = () => {
-    if (Array.isArray(sb.tags)) return sb.tags.map((x) => normalizeTag(String(x))).filter(Boolean);
-    return [];
-  };
 
-  const fromCsv = () => {
-    const raw = safeStr(sb.tagcsv ?? "").trim();
-    if (!raw) return [];
-    return raw
-      .split(/[,\n]/g)
-      .map((x) => normalizeTag(x))
-      .filter(Boolean);
-  };
+  const raw = sb.tags;
 
-  const tags = [...fromArray(), ...fromCsv()];
-  // unique + cap
+  let arr: string[] = [];
+  if (Array.isArray(raw)) {
+    arr = raw.map((x) => safeStr(x)).filter(Boolean);
+  } else if (typeof raw === "string" && raw.trim()) {
+    arr = raw.split(",").map((x) => safeStr(x)).filter(Boolean);
+  } else if (typeof sb.tagcsv === "string" && sb.tagcsv.trim()) {
+    arr = sb.tagcsv.split(",").map((x) => safeStr(x)).filter(Boolean);
+  }
+
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const t of tags) {
+  for (const t of arr.map(normalizeTag)) {
     if (!t) continue;
     if (seen.has(t)) continue;
     seen.add(t);
@@ -294,103 +300,91 @@ function parseTagsFromSb(sb: SupabaseCallSummary | null | undefined): string[] {
   return out;
 }
 
-function parseLinesFromSb(v: any): string[] {
-  if (Array.isArray(v)) return v.map((x) => String(x)).map((s) => s.trim()).filter(Boolean);
-  const s = safeStr(v).trim();
-  if (!s) return [];
-  return s
-    .split("\n")
-    .map((x) => x.trim())
-    .filter(Boolean);
+function parseTextList(v: any, fallbackText?: string | null, max = 8): string[] {
+  if (Array.isArray(v)) return v.map((x) => safeStr(x)).filter(Boolean).slice(0, max);
+  if (typeof v === "string" && v.trim()) return v.split(/\r?\n|,/g).map((x) => safeStr(x)).filter(Boolean).slice(0, max);
+  if (fallbackText && fallbackText.trim())
+    return fallbackText.split(/\r?\n|,/g).map((x) => safeStr(x)).filter(Boolean).slice(0, max);
+  return [];
+}
+
+function pickSummary(sb: SupabaseCallSummary | null): string | null {
+  if (!sb) return null;
+  const s = safeStr(sb.summary_clean || sb.summary).trim();
+  return s ? s : null;
+}
+
+function pickNextAction(sb: SupabaseCallSummary | null): string | null {
+  if (!sb) return null;
+  const s = safeStr(sb.next_best_action || sb.best_next_action).trim();
+  return s ? s : null;
+}
+
+function pickRecordingUrl(sb: SupabaseCallSummary | null): string | null {
+  if (!sb) return null;
+  return (sb.recording_url || sb.stereo_recording_url || sb.log_url) ?? null;
 }
 
 /* =========================
    Supabase REST fetch (NEW schema)
    ========================= */
 
-type SummaryMaps = {
-  byCallId: Map<string, SupabaseCallSummary>;
-  byCallJobId: Map<string, SupabaseCallSummary>;
-  byCheckoutId: Map<string, SupabaseCallSummary>;
-};
-
-function quoteList(values: string[]) {
-  return values
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .map((x) => `"${x.replace(/"/g, "")}"`)
-    .join(",");
-}
-
-/**
- * Fetch summaries by ANY of:
- * - call_id (providerCallId)
- * - call_job_id (Prisma job id)
- * - checkout_id
- *
- * Uses `or=(...)` so you don't depend on only providerCallId being present.
- */
 async function fetchSupabaseSummaries(opts: {
+  shop: string;
   callIds?: string[];
   callJobIds?: string[];
   checkoutIds?: string[];
-}): Promise<SummaryMaps> {
-  const maps: SummaryMaps = {
-    byCallId: new Map(),
-    byCallJobId: new Map(),
-    byCheckoutId: new Map(),
-  };
-
+}): Promise<Map<string, SupabaseCallSummary>> {
+  const out = new Map<string, SupabaseCallSummary>();
   const url = process.env.SUPABASE_URL?.trim();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-  if (!url || !key) return maps;
+  if (!url || !key) return out;
+
+  const shop = opts.shop;
 
   const callIds = (opts.callIds ?? []).map((x) => x.trim()).filter(Boolean);
   const callJobIds = (opts.callJobIds ?? []).map((x) => x.trim()).filter(Boolean);
   const checkoutIds = (opts.checkoutIds ?? []).map((x) => x.trim()).filter(Boolean);
 
-  const parts: string[] = [];
-  if (callIds.length) parts.push(`call_id.in.(${quoteList(Array.from(new Set(callIds)))})`);
-  if (callJobIds.length) parts.push(`call_job_id.in.(${quoteList(Array.from(new Set(callJobIds)))})`);
-  if (checkoutIds.length) parts.push(`checkout_id.in.(${quoteList(Array.from(new Set(checkoutIds)))})`);
+  if (callIds.length === 0 && callJobIds.length === 0 && checkoutIds.length === 0) return out;
 
-  if (parts.length === 0) return maps;
-
+  // IMPORTANT: include ALL columns you have today (and safe to ignore if null)
   const select = [
     "id",
-    "received_at",
-    "call_id",
     "shop",
-    "checkout_id",
+    "call_id",
     "call_job_id",
+    "checkout_id",
+    "received_at",
+    "last_received_at",
     "latest_status",
     "ended_reason",
-    "transcript",
-    "end_of_call_report",
     "recording_url",
     "stereo_recording_url",
     "log_url",
-    "tone",
-    "summary",
-    "summary_clean",
-    "tagcsv",
-    "tags",
+    "transcript",
+    "end_of_call_report",
+    "call_outcome",
+    "disposition",
     "answered",
     "voicemail",
     "sentiment",
-    "call_outcome",
-    "disposition",
+    "tone",
     "buy_probability",
     "customer_intent",
-    "key_quotes_text",
-    "key_quotes",
-    "objections_text",
-    "objections",
-    "issues_to_fix_text",
-    "issues_to_fix",
-    "best_next_action",
+    "tags",
+    "tagcsv",
+    "summary",
+    "summary_clean",
     "next_best_action",
+    "best_next_action",
     "follow_up_message",
+    "key_quotes",
+    "key_quotes_text",
+    "objections",
+    "objections_text",
+    "issues_to_fix",
+    "issues_to_fix_text",
     "human_intervention",
     "human_intervention_reason",
     "discount_suggest",
@@ -399,16 +393,25 @@ async function fetchSupabaseSummaries(opts: {
     "ai_status",
     "ai_error",
     "ai_processed_at",
-    "structured_outputs",
-    "payload",
     "ai_result",
     "ai_insights",
+    "payload",
+    "structured_outputs",
   ].join(",");
 
-  // Prefer newest row if duplicates exist.
-  const endpoint = `${url}/rest/v1/vapi_call_summaries?select=${encodeURIComponent(select)}&or=(${encodeURIComponent(
-    parts.join(",")
-  )})&order=${encodeURIComponent("received_at.desc")}&limit=500`;
+  const mkIn = (values: string[]) => values.map((x) => `"${x.replace(/"/g, "")}"`).join(",");
+
+  const orParts: string[] = [];
+  if (callIds.length) orParts.push(`call_id.in.(${encodeURIComponent(mkIn(Array.from(new Set(callIds))))})`);
+  if (callJobIds.length) orParts.push(`call_job_id.in.(${encodeURIComponent(mkIn(Array.from(new Set(callJobIds))))})`);
+  if (checkoutIds.length) orParts.push(`checkout_id.in.(${encodeURIComponent(mkIn(Array.from(new Set(checkoutIds))))})`);
+
+  const or = orParts.join(",");
+  const endpoint =
+    `${url}/rest/v1/vapi_call_summaries` +
+    `?select=${encodeURIComponent(select)}` +
+    `&shop=eq.${encodeURIComponent(shop)}` +
+    (or ? `&or=(${or})` : "");
 
   const r = await fetch(endpoint, {
     method: "GET",
@@ -419,20 +422,23 @@ async function fetchSupabaseSummaries(opts: {
     },
   });
 
-  if (!r.ok) return maps;
-
-  const data = (await r.json()) as SupabaseCallSummary[];
-  for (const row of data || []) {
-    const callId = safeStr(row?.call_id).trim();
-    const jobId = safeStr((row as any)?.call_job_id).trim();
-    const checkoutId = safeStr((row as any)?.checkout_id).trim();
-
-    if (callId && !maps.byCallId.has(callId)) maps.byCallId.set(callId, row);
-    if (jobId && !maps.byCallJobId.has(jobId)) maps.byCallJobId.set(jobId, row);
-    if (checkoutId && !maps.byCheckoutId.has(checkoutId)) maps.byCheckoutId.set(checkoutId, row);
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    console.error("[SB] fetch failed", r.status, r.statusText, body.slice(0, 800));
+    return out;
   }
 
-  return maps;
+  const data = (await r.json()) as SupabaseCallSummary[];
+
+  // Map by multiple keys for robust matching
+  for (const row of data || []) {
+    if (!row) continue;
+    if (row.call_id) out.set(`call:${String(row.call_id)}`, row);
+    if (row.call_job_id) out.set(`job:${String(row.call_job_id)}`, row);
+    if (row.checkout_id) out.set(`co:${String(row.checkout_id)}`, row);
+  }
+
+  return out;
 }
 
 /* =========================
@@ -657,29 +663,32 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // ✅ Pull Supabase summaries by ALL join keys
   const callIds = recentJobsRaw.map((j: any) => String(j.providerCallId ?? "")).filter(Boolean);
-  const callJobIds = recentJobsRaw.map((j: any) => String(j.id)).filter(Boolean);
-  const sbMaps = await fetchSupabaseSummaries({
-    callIds: Array.from(new Set(callIds)),
-    callJobIds: Array.from(new Set(callJobIds)),
-    checkoutIds: Array.from(new Set(checkoutIdsFromJobs)),
+  const callJobIds = recentJobsRaw.map((j: any) => String(j.id ?? "")).filter(Boolean);
+  const checkoutIds = recentJobsRaw.map((j: any) => String(j.checkoutId ?? "")).filter(Boolean);
+
+  const sbMap = await fetchSupabaseSummaries({
+    shop,
+    callIds,
+    callJobIds,
+    checkoutIds,
   });
 
   const potentialRevenue7d = Number(potentialAgg._sum.value ?? 0);
 
   const rows: Row[] = recentJobsRaw.map((j: any) => {
     const c = cMap.get(j.checkoutId);
+
     const callId = j.providerCallId ? String(j.providerCallId) : "";
     const jobId = String(j.id);
-    const checkoutId = String(j.checkoutId);
+    const coId = String(j.checkoutId);
 
     const sb =
-      (callId && sbMaps.byCallId.get(callId)) ||
-      sbMaps.byCallJobId.get(jobId) ||
-      sbMaps.byCheckoutId.get(checkoutId) ||
+      (callId ? sbMap.get(`call:${callId}`) : null) ||
+      (jobId ? sbMap.get(`job:${jobId}`) : null) ||
+      (coId ? sbMap.get(`co:${coId}`) : null) ||
       null;
 
-    // Unified fields:
-    const sentiment = cleanSentiment(sb?.sentiment ?? sb?.tone ?? null);
+    const sentiment = cleanSentiment((sb?.sentiment ?? sb?.tone) ?? null);
 
     const answeredFlag: Row["answeredFlag"] =
       sb?.answered === true ? "answered" : sb?.answered === false ? "no_answer" : "unknown";
@@ -691,24 +700,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         ? Math.max(0, Math.min(100, Math.round(sb.buy_probability)))
         : null;
 
-    const tags = parseTagsFromSb(sb);
+    const tags = parseTags(sb);
 
-    const summaryText =
-      (sb?.summary_clean && String(sb.summary_clean)) ||
-      (sb?.summary && String(sb.summary)) ||
-      (sb?.end_of_call_report && String(sb.end_of_call_report)) ||
-      null;
-
-    const nextActionText =
-      (sb?.next_best_action && String(sb.next_best_action)) ||
-      (sb?.best_next_action && String(sb.best_next_action)) ||
-      null;
-
+    const summaryText = pickSummary(sb);
+    const nextActionText = pickNextAction(sb);
     const followUpText = sb?.follow_up_message ? String(sb.follow_up_message) : null;
-
     const callOutcome = sb?.call_outcome ? String(sb.call_outcome) : null;
 
-    const recordingFromSb = sb?.recording_url || sb?.stereo_recording_url || sb?.log_url || null;
+    const recordingFromSb = pickRecordingUrl(sb);
 
     return {
       id: String(j.id),
@@ -786,7 +785,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const latestJobMap = pickLatestJobByCheckout(allJobsForMap);
 
   // Pull summaries for checkouts table via checkout_id + providerCallId + call_job_id
-  const checkoutIdsAll = allCheckoutsRaw.map((c: any) => String(c.checkoutId));
+  const checkoutIdsAll = allCheckoutsRaw.map((c: any) => String(c.checkoutId)).filter(Boolean);
+
   const checkoutCallIds = allCheckoutsRaw
     .map((c: any) => {
       const j = latestJobMap.get(String(c.checkoutId)) ?? null;
@@ -801,7 +801,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     })
     .filter(Boolean);
 
-  const sbMaps2 = await fetchSupabaseSummaries({
+  const sbMap2 = await fetchSupabaseSummaries({
+    shop,
     callIds: Array.from(new Set(checkoutCallIds)),
     callJobIds: Array.from(new Set(checkoutJobIds)),
     checkoutIds: Array.from(new Set(checkoutIdsAll)),
@@ -809,17 +810,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const allCheckouts: CheckoutUIRow[] = allCheckoutsRaw.map((c: any) => {
     const j = latestJobMap.get(String(c.checkoutId)) ?? null;
+
     const callId = j?.providerCallId ? String(j.providerCallId) : "";
     const jobId = j?.id ? String(j.id) : "";
     const checkoutId = String(c.checkoutId);
 
     const sb =
-      (callId && sbMaps2.byCallId.get(callId)) ||
-      (jobId && sbMaps2.byCallJobId.get(jobId)) ||
-      sbMaps2.byCheckoutId.get(checkoutId) ||
+      (callId ? sbMap2.get(`call:${callId}`) : null) ||
+      (jobId ? sbMap2.get(`job:${jobId}`) : null) ||
+      (checkoutId ? sbMap2.get(`co:${checkoutId}`) : null) ||
       null;
 
-    const recordingFromSb = sb?.recording_url || sb?.stereo_recording_url || sb?.log_url || null;
+    const recordingFromSb = pickRecordingUrl(sb);
 
     return {
       checkoutId,
@@ -1089,9 +1091,9 @@ export default function Dashboard() {
 
   const pageWrap: React.CSSProperties = { padding: 16, minWidth: 0 };
 
-  const selectedKeyQuotes = selected ? parseLinesFromSb(selected.sb?.key_quotes ?? selected.sb?.key_quotes_text) : [];
-  const selectedObjections = selected ? parseLinesFromSb(selected.sb?.objections ?? selected.sb?.objections_text) : [];
-  const selectedIssues = selected ? parseLinesFromSb(selected.sb?.issues_to_fix ?? selected.sb?.issues_to_fix_text) : [];
+  const selectedKeyQuotes = selected ? parseTextList(selected.sb?.key_quotes, selected.sb?.key_quotes_text, 6) : [];
+  const selectedObjections = selected ? parseTextList(selected.sb?.objections, selected.sb?.objections_text, 8) : [];
+  const selectedIssues = selected ? parseTextList(selected.sb?.issues_to_fix, selected.sb?.issues_to_fix_text, 8) : [];
 
   return (
     <div style={pageWrap}>
@@ -1165,7 +1167,12 @@ export default function Dashboard() {
             Refresh
           </SoftButton>
 
-          <SoftButton type="button" onClick={() => setQuery("")} disabled={!query} style={!query ? { opacity: 0.5, cursor: "not-allowed" } : undefined}>
+          <SoftButton
+            type="button"
+            onClick={() => setQuery("")}
+            disabled={!query}
+            style={!query ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+          >
             Clear
           </SoftButton>
         </div>
@@ -1388,7 +1395,9 @@ export default function Dashboard() {
                         <td style={cell}>
                           <div style={{ display: "grid", gap: 4 }}>
                             <div style={{ fontWeight: 1000 }}>{formatWhen(j.scheduledFor)}</div>
-                            <div style={{ fontSize: 11, fontWeight: 900, color: "rgba(17,24,39,0.40)" }}>Created {formatWhen(j.createdAt)}</div>
+                            <div style={{ fontSize: 11, fontWeight: 900, color: "rgba(17,24,39,0.40)" }}>
+                              Created {formatWhen(j.createdAt)}
+                            </div>
                           </div>
                         </td>
 
@@ -1454,10 +1463,20 @@ export default function Dashboard() {
                     <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Key</div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <Pill title="Checkout ID">{selected.checkoutId}</Pill>
+
                       {selected.providerCallId ? <Pill title="Vapi call id">{selected.providerCallId.slice(0, 14)}…</Pill> : null}
-                      {selected.endedReason ? <Pill title="Ended reason">{selected.endedReason}</Pill> : null}
+                      {selected.sb?.call_job_id ? <Pill title="call_job_id">{String(selected.sb.call_job_id).slice(0, 12)}…</Pill> : null}
+
                       {selected.sb?.latest_status ? <Pill title="Latest status">{String(selected.sb.latest_status)}</Pill> : null}
+                      {selected.endedReason ? <Pill title="Ended reason">{selected.endedReason}</Pill> : null}
+
                       <AiStatusPill status={selected.sb?.ai_status ?? null} err={selected.sb?.ai_error ?? null} />
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {selected.sb?.received_at ? <Pill title="received_at">{formatWhen(selected.sb.received_at)}</Pill> : null}
+                      {selected.sb?.last_received_at ? <Pill title="last_received_at">{formatWhen(selected.sb.last_received_at)}</Pill> : null}
+                      {selected.sb?.ai_processed_at ? <Pill title="ai_processed_at">{formatWhen(selected.sb.ai_processed_at)}</Pill> : null}
                     </div>
                   </div>
 
@@ -1474,6 +1493,8 @@ export default function Dashboard() {
                           DISCOUNT SUGGESTED
                         </Pill>
                       ) : null}
+                      {selected.sb?.voicemail === true ? <Pill tone="amber" title="Voicemail detected">VOICEMAIL</Pill> : null}
+                      {selected.sb?.customer_intent ? <Pill title="customer_intent">{String(selected.sb.customer_intent)}</Pill> : null}
                     </div>
 
                     {selected.tags.length ? (
@@ -1518,7 +1539,7 @@ export default function Dashboard() {
                         }}
                       >
                         <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>KEY QUOTES</div>
-                        {selectedKeyQuotes.slice(0, 6).map((q, idx) => `• ${q}`).join("\n")}
+                        {selectedKeyQuotes.slice(0, 6).map((qq) => `• ${qq}`).join("\n")}
                       </div>
                     ) : null}
                   </div>
@@ -1626,6 +1647,50 @@ export default function Dashboard() {
                     </div>
                   </div>
 
+                  {/* Transcript / report */}
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Transcript / Report</div>
+
+                    <div
+                      style={{
+                        border: "1px solid rgba(0,0,0,0.10)",
+                        borderRadius: 14,
+                        padding: 10,
+                        fontWeight: 900,
+                        color: "rgba(17,24,39,0.78)",
+                        background: "white",
+                        whiteSpace: "pre-wrap",
+                        lineHeight: 1.35,
+                        maxHeight: 160,
+                        overflow: "auto",
+                      }}
+                    >
+                      {selected.sb?.transcript || selected.transcript || "—"}
+                    </div>
+
+                    {selected.sb?.end_of_call_report ? (
+                      <div
+                        style={{
+                          border: "1px solid rgba(0,0,0,0.10)",
+                          borderRadius: 14,
+                          padding: 10,
+                          fontWeight: 900,
+                          color: "rgba(17,24,39,0.78)",
+                          background: "rgba(0,0,0,0.02)",
+                          whiteSpace: "pre-wrap",
+                          lineHeight: 1.35,
+                          maxHeight: 160,
+                          overflow: "auto",
+                        }}
+                      >
+                        <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>
+                          END OF CALL REPORT
+                        </div>
+                        {String(selected.sb.end_of_call_report)}
+                      </div>
+                    ) : null}
+                  </div>
+
                   {/* Manual */}
                   <div style={{ display: "grid", gap: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Manual</div>
@@ -1650,7 +1715,7 @@ export default function Dashboard() {
                     </Form>
                   </div>
 
-                  {/* Raw AI payload */}
+                  {/* Raw payloads */}
                   <div style={{ display: "grid", gap: 6 }}>
                     <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>AI raw</div>
                     <div
@@ -1663,7 +1728,7 @@ export default function Dashboard() {
                         fontWeight: 900,
                         color: "rgba(17,24,39,0.65)",
                         background: "rgba(0,0,0,0.02)",
-                        maxHeight: 160,
+                        maxHeight: 200,
                         overflow: "auto",
                         whiteSpace: "pre-wrap",
                       }}
@@ -1671,9 +1736,65 @@ export default function Dashboard() {
                       {selected.sb
                         ? JSON.stringify(
                             {
+                              // status
                               ai_status: selected.sb.ai_status,
                               ai_error: selected.sb.ai_error,
                               ai_processed_at: selected.sb.ai_processed_at,
+
+                              // join keys
+                              shop: selected.sb.shop,
+                              checkout_id: selected.sb.checkout_id,
+                              call_job_id: selected.sb.call_job_id,
+                              call_id: selected.sb.call_id,
+
+                              // timestamps
+                              received_at: selected.sb.received_at,
+                              last_received_at: selected.sb.last_received_at,
+
+                              // call state
+                              latest_status: selected.sb.latest_status,
+                              ended_reason: selected.sb.ended_reason,
+
+                              // links
+                              recording_url: selected.sb.recording_url,
+                              stereo_recording_url: selected.sb.stereo_recording_url,
+                              log_url: selected.sb.log_url,
+
+                              // signals
+                              answered: selected.sb.answered,
+                              voicemail: selected.sb.voicemail,
+                              sentiment: selected.sb.sentiment,
+                              tone: selected.sb.tone,
+                              buy_probability: selected.sb.buy_probability,
+                              customer_intent: selected.sb.customer_intent,
+                              disposition: selected.sb.disposition,
+                              call_outcome: selected.sb.call_outcome,
+
+                              // text
+                              summary: selected.sb.summary,
+                              summary_clean: selected.sb.summary_clean,
+                              next_best_action: selected.sb.next_best_action,
+                              best_next_action: selected.sb.best_next_action,
+                              follow_up_message: selected.sb.follow_up_message,
+
+                              // lists
+                              tags: selected.sb.tags,
+                              tagcsv: selected.sb.tagcsv,
+                              key_quotes: selected.sb.key_quotes,
+                              key_quotes_text: selected.sb.key_quotes_text,
+                              objections: selected.sb.objections,
+                              objections_text: selected.sb.objections_text,
+                              issues_to_fix: selected.sb.issues_to_fix,
+                              issues_to_fix_text: selected.sb.issues_to_fix_text,
+
+                              // escalation / discount
+                              human_intervention: selected.sb.human_intervention,
+                              human_intervention_reason: selected.sb.human_intervention_reason,
+                              discount_suggest: selected.sb.discount_suggest,
+                              discount_percent: selected.sb.discount_percent,
+                              discount_rationale: selected.sb.discount_rationale,
+
+                              // payloads
                               structured_outputs: selected.sb.structured_outputs,
                               payload: selected.sb.payload,
                               ai_result: selected.sb.ai_result,
