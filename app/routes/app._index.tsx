@@ -135,27 +135,84 @@ function safeStr(v: any) {
 function stripFences(s: string) {
   const t = safeStr(s).trim();
   if (!t) return "";
-  if (t.startsWith("```")) return t.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
+
+  // remove any ```lang ... ``` blocks even if they are not at the start
+  // take the first fenced block if exists
+  const fence = /```[a-zA-Z]*\s*([\s\S]*?)\s*```/m.exec(t);
+  if (fence && fence[1]) return String(fence[1]).trim();
+
+  // also handle inline ``` ... ``` without newlines
+  const fence2 = /```([\s\S]*?)```/m.exec(t);
+  if (fence2 && fence2[1]) return String(fence2[1]).trim();
+
   return t;
 }
 
 function tryParseJsonObject(s: string): any | null {
-  const raw = stripFences(safeStr(s).trim());
+  const raw0 = safeStr(s);
+  if (!raw0.trim()) return null;
+
+  // 1) try to extract from fenced code blocks, or return original
+  const raw = stripFences(raw0).trim();
   if (!raw) return null;
 
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") return parsed;
-  } catch {}
+  // helper: parse object from a candidate string (direct or double-parsed)
+  const parseMaybe = (candidate: string): any | null => {
+    const c = candidate.trim();
+    if (!c) return null;
 
+    // direct parse
+    try {
+      const p = JSON.parse(c);
+      if (p && typeof p === "object") return p;
+
+      // if it's a JSON string that contains JSON, parse again
+      if (typeof p === "string") {
+        try {
+          const p2 = JSON.parse(p);
+          if (p2 && typeof p2 === "object") return p2;
+        } catch {}
+      }
+    } catch {}
+
+    // if looks like escaped json, unescape common patterns then retry
+    if (c.includes('\\"') || c.includes("\\n") || c.includes("\\t")) {
+      try {
+        // Wrap as JSON string then parse to unescape
+        const unescaped = JSON.parse(`"${c.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
+        if (typeof unescaped === "string") {
+          try {
+            const p3 = JSON.parse(unescaped);
+            if (p3 && typeof p3 === "object") return p3;
+          } catch {}
+        }
+      } catch {}
+    }
+
+    return null;
+  };
+
+  // 2) best attempt: parse whole string (maybe already json)
+  const whole = parseMaybe(raw);
+  if (whole) return whole;
+
+  // 3) extract first {...} block from anywhere in the text and parse it
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start >= 0 && end > start) {
     const chunk = raw.slice(start, end + 1);
-    try {
-      const parsed2 = JSON.parse(chunk);
-      if (parsed2 && typeof parsed2 === "object") return parsed2;
-    } catch {}
+    const obj = parseMaybe(chunk);
+    if (obj) return obj;
+  }
+
+  // 4) sometimes the original (before stripFences) has braces but stripFences removed wrong part
+  const r2 = raw0.trim();
+  const s2 = r2.indexOf("{");
+  const e2 = r2.lastIndexOf("}");
+  if (s2 >= 0 && e2 > s2) {
+    const chunk2 = r2.slice(s2, e2 + 1);
+    const obj2 = parseMaybe(chunk2);
+    if (obj2) return obj2;
   }
 
   return null;
@@ -771,6 +828,18 @@ export default function Dashboard() {
     color: "rgba(0,0,0,0.78)",
   };
 
+// ⬇️ ΒΑΛΕ ΑΥΤΟ ΜΕΣΑ ΣΤΟ Dashboard() ΠΡΙΝ ΤΟ return (ακριβώς πριν το `return (`)
+
+// responsive breakpoint για embedded iframe widths
+const [isNarrow, setIsNarrow] = React.useState(false);
+
+React.useEffect(() => {
+  const onResize = () => setIsNarrow(window.innerWidth < 1100);
+  onResize();
+  window.addEventListener("resize", onResize);
+  return () => window.removeEventListener("resize", onResize);
+}, []);
+
   return (
     <s-page heading="Checkout Call Recovery AI">
       <s-paragraph>
@@ -919,251 +988,352 @@ export default function Dashboard() {
                           </td>
 
                           <td style={cell}>
-                            <div style={{ display: "grid", gap: 4 }}>
-                              <div style={{ fontWeight: 950 }}>{formatWhen(j.scheduledFor)}</div>
-                              <div style={{ fontSize: 11, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
-                                Created {formatWhen(j.createdAt)}
-                              </div>
-                            </div>
-                          </td>
+                            // ⬇️ ΒΑΛΕ ΑΥΤΟ ΜΕΣΑ ΣΤΟ Dashboard() ΠΡΙΝ ΤΟ return (ακριβώς πριν το `return (`)
 
-                          <td style={cell}>{j.attempts}</td>
+// responsive breakpoint για embedded iframe widths
+const [isNarrow, setIsNarrow] = React.useState(false);
 
-                          <td style={cell}><AnsweredPill answered={j.answered} /></td>
+React.useEffect(() => {
+  const onResize = () => setIsNarrow(window.innerWidth < 1100);
+  onResize();
+  window.addEventListener("resize", onResize);
+  return () => window.removeEventListener("resize", onResize);
+}, []);
 
-                          <td style={cell}><DispositionPill d={j.disposition} /></td>
+// ⬇️ ΚΑΙ ΤΩΡΑ ΑΝΤΙΚΑΤΑΣΤΗΣΕ ΟΛΟΚΛΗΡΟ ΤΟ GRID BLOCK (από το `<div style={{ display:"grid"... }}>` μέχρι να κλείσει)
+// Με αυτό το block:
 
-                          <td style={cell}><PercentPill label="Buy" value={j.buyProbability} tone="green" /></td>
+<div
+  style={{
+    display: "grid",
+    gridTemplateColumns: isNarrow ? "1fr" : "minmax(0, 1fr) 420px",
+    gap: 14,
+    alignItems: "start",
+    minWidth: 0,
+  }}
+>
+  {/* LEFT: TABLE */}
+  <div
+    style={{
+      border: "1px solid rgba(0,0,0,0.10)",
+      borderRadius: 14,
+      overflow: "hidden",
+      background: "white",
+      minWidth: 0, // CRITICAL
+    }}
+  >
+    <div style={{ maxHeight: 420, overflow: "auto" }}>
+      {/* table gets horizontal scroll INSIDE left panel, not cutting the whole UI */}
+      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+        <thead>
+          <tr>
+            <th style={headerCell} title="Abandoned checkout identifier">Checkout</th>
+            <th style={headerCell} title="Customer name if available">Customer</th>
+            <th style={headerCell} title="Top cart items preview">Cart</th>
+            <th style={headerCell} title="Job state in the pipeline">Status</th>
+            <th style={headerCell} title="Scheduled time (and created time in details)">Scheduled</th>
+            <th style={headerCell} title="Times dialed / attempted">Attempts</th>
+            <th style={headerCell} title="Did the customer engage?">Answered</th>
+            <th style={headerCell} title="Outcome category (from AI + tags)">Disposition</th>
+            <th style={headerCell} title="Estimated probability of purchase">Buy</th>
+            <th style={headerCell} title="Estimated risk of losing the sale">Churn</th>
+            <th style={headerCell} title="Recommended next step">Next action</th>
+          </tr>
+        </thead>
 
-                          <td style={cell}><PercentPill label="Churn" value={j.churnProbability} tone="red" /></td>
+        <tbody>
+          {recentJobs.map((j) => {
+            const isSelected = j.id === selectedId;
+            return (
+              <tr
+                key={j.id}
+                onClick={() => setSelectedId(j.id)}
+                style={{
+                  background: isSelected ? "rgba(59,130,246,0.06)" : "white",
+                  cursor: "pointer",
+                }}
+              >
+                <td style={cell}>{j.checkoutId}</td>
 
-                          <td style={{ ...cell, maxWidth: 260 }}>
-                            {j.summaryNextAction ? (
-                              <span
-                                title={j.summaryNextAction}
-                                style={{
-                                  display: "inline-block",
-                                  maxWidth: 260,
-                                  whiteSpace: "nowrap",
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  fontWeight: 900,
-                                }}
-                              >
-                                {j.summaryNextAction}
-                              </span>
-                            ) : (
-                              <span style={{ color: "rgba(0,0,0,0.35)", fontWeight: 900 }}>—</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                <td style={cell}>{j.customerName ?? "-"}</td>
 
-            {/* RIGHT: DETAILS PANEL */}
-            <div
-              style={{
-                position: "sticky",
-                top: 12,
-                border: "1px solid rgba(0,0,0,0.10)",
-                borderRadius: 14,
-                background: "white",
-                overflow: "hidden",
-              }}
-            >
-              <div style={{ padding: 14, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                <td style={{ ...cell, maxWidth: 260 }}>
+                  <span
+                    title={j.cartPreview ?? ""}
+                    style={{
+                      display: "inline-block",
+                      maxWidth: 260,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      fontWeight: 850,
+                    }}
+                  >
+                    {j.cartPreview ?? "-"}
+                  </span>
+                </td>
+
+                <td style={cell}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <StatusPill status={j.status} />
+                    {cleanSentiment(j.analysis?.sentiment ?? j.sentiment) ? (
+                      <Pill title="Sentiment">
+                        {String(cleanSentiment(j.analysis?.sentiment ?? j.sentiment)).toUpperCase()}
+                      </Pill>
+                    ) : null}
+                  </div>
+                </td>
+
+                <td style={cell}>
                   <div style={{ display: "grid", gap: 4 }}>
-                    <div style={{ fontSize: 13, fontWeight: 950, color: "rgba(0,0,0,0.75)" }}>
-                      Call details
-                    </div>
-                    <div style={{ fontSize: 12, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
-                      {selected ? `Created ${formatWhen(selected.createdAt)}` : "Select a row"}
+                    <div style={{ fontWeight: 950 }}>{formatWhen(j.scheduledFor)}</div>
+                    <div style={{ fontSize: 11, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
+                      Created {formatWhen(j.createdAt)}
                     </div>
                   </div>
+                </td>
 
-                  {selected ? (
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      <StatusPill status={selected.status} />
-                      <AnsweredPill answered={selected.answered} />
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+                <td style={cell}>{j.attempts}</td>
 
-              <div style={{ padding: 14, display: "grid", gap: 12 }}>
-                {!selected ? (
-                  <div style={{ color: "rgba(0,0,0,0.45)", fontWeight: 900 }}>
-                    Select a job to see summary, tags, transcript and actions.
-                  </div>
-                ) : (
-                  <>
-                    <div style={{ display: "grid", gap: 6 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Key</div>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <Pill title="Checkout ID">{selected.checkoutId}</Pill>
-                        {selected.providerCallId ? <Pill title="Provider call id">{selected.providerCallId.slice(0, 14)}…</Pill> : null}
-                        {selected.endedReason ? <Pill title="Why call ended">{selected.endedReason}</Pill> : null}
-                      </div>
-                    </div>
+                <td style={cell}><AnsweredPill answered={j.answered} /></td>
 
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Insights</div>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <DispositionPill d={selected.disposition} />
-                        <PercentPill label="Buy" value={selected.buyProbability} tone="green" />
-                        <PercentPill label="Churn" value={selected.churnProbability} tone="red" />
-                        {cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment) ? (
-                          <Pill title="Sentiment">{String(cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment)).toUpperCase()}</Pill>
-                        ) : null}
-                        {typeof selected.analysis?.confidence === "number" ? (
-                          <Pill title="Model confidence">{Math.round(clamp01(selected.analysis.confidence) * 100)}% conf</Pill>
-                        ) : null}
-                      </div>
+                <td style={cell}><DispositionPill d={j.disposition} /></td>
 
-                      {selected.tags.length ? (
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {selected.tags.slice(0, 10).map((t) => (
-                            <Pill key={t} title="Tag">{t}</Pill>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
+                <td style={cell}><PercentPill label="Buy" value={j.buyProbability} tone="green" /></td>
 
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>What happened</div>
-                      <div
-                        style={{
-                          border: "1px solid rgba(0,0,0,0.10)",
-                          borderRadius: 12,
-                          padding: 10,
-                          fontWeight: 850,
-                          color: "rgba(0,0,0,0.75)",
-                          lineHeight: 1.35,
-                          background: "rgba(0,0,0,0.02)",
-                        }}
-                      >
-                        {selected.summaryReason ?? "—"}
-                      </div>
-                    </div>
+                <td style={cell}><PercentPill label="Churn" value={j.churnProbability} tone="red" /></td>
 
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Recommended next action</div>
-                      <div
-                        style={{
-                          border: "1px solid rgba(59,130,246,0.20)",
-                          borderRadius: 12,
-                          padding: 10,
-                          fontWeight: 900,
-                          color: "rgba(30,58,138,0.90)",
-                          lineHeight: 1.35,
-                          background: "rgba(59,130,246,0.06)",
-                        }}
-                      >
-                        {selected.summaryNextAction ?? "—"}
-                      </div>
-                    </div>
+                <td style={{ ...cell, maxWidth: 260 }}>
+                  {j.summaryNextAction ? (
+                    <span
+                      title={j.summaryNextAction}
+                      style={{
+                        display: "inline-block",
+                        maxWidth: 260,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        fontWeight: 900,
+                      }}
+                    >
+                      {j.summaryNextAction}
+                    </span>
+                  ) : (
+                    <span style={{ color: "rgba(0,0,0,0.35)", fontWeight: 900 }}>—</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  </div>
 
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Suggested follow-up message</div>
-                      <div
-                        style={{
-                          border: "1px solid rgba(0,0,0,0.10)",
-                          borderRadius: 12,
-                          padding: 10,
-                          fontWeight: 850,
-                          color: "rgba(0,0,0,0.75)",
-                          lineHeight: 1.35,
-                          background: "white",
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {selected.summaryText ?? "—"}
-                      </div>
+  {/* RIGHT: DETAILS PANEL */}
+  <div
+    style={{
+      position: isNarrow ? "relative" : "sticky",
+      top: isNarrow ? undefined : 12,
+      border: "1px solid rgba(0,0,0,0.10)",
+      borderRadius: 14,
+      background: "white",
+      overflow: "hidden",
+      minWidth: 0,
+      width: isNarrow ? "100%" : 420,
+      justifySelf: "stretch",
+    }}
+  >
+    <div style={{ padding: 14, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "grid", gap: 4 }}>
+          <div style={{ fontSize: 13, fontWeight: 950, color: "rgba(0,0,0,0.75)" }}>
+            Call details
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
+            {selected ? `Created ${formatWhen(selected.createdAt)}` : "Select a row"}
+          </div>
+        </div>
 
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <SoftButton
-                          type="button"
-                          onClick={() => copy(selected.summaryText ?? "")}
-                          disabled={!selected.summaryText}
-                          style={!selected.summaryText ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-                        >
-                          Copy follow-up
-                        </SoftButton>
+        {selected ? (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <StatusPill status={selected.status} />
+            <AnsweredPill answered={selected.answered} />
+          </div>
+        ) : null}
+      </div>
+    </div>
 
-                        <SoftButton
-                          type="button"
-                          onClick={() => copy(selected.transcript ?? "")}
-                          disabled={!selected.transcript}
-                          style={!selected.transcript ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-                        >
-                          Copy transcript
-                        </SoftButton>
-
-                        {selected.recordingUrl ? (
-                          <a href={selected.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-                            <SoftButton type="button" tone="primary">Open recording</SoftButton>
-                          </a>
-                        ) : (
-                          <SoftButton type="button" disabled style={{ opacity: 0.5, cursor: "not-allowed" }}>
-                            Open recording
-                          </SoftButton>
-                        )}
-                      </div>
-                    </div>
-
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Manual</div>
-                      <Form method="post">
-                        <input type="hidden" name="intent" value="manual_call" />
-                        <input type="hidden" name="callJobId" value={selected.id} />
-                        <button
-                          type="submit"
-                          disabled={selected.status !== "QUEUED"}
-                          style={{
-                            padding: "8px 12px",
-                            borderRadius: 10,
-                            border: "1px solid rgba(0,0,0,0.12)",
-                            background: selected.status === "QUEUED" ? "white" : "#f3f3f3",
-                            cursor: selected.status === "QUEUED" ? "pointer" : "not-allowed",
-                            fontWeight: 950,
-                            width: "100%",
-                          }}
-                        >
-                          Call now
-                        </button>
-                      </Form>
-                    </div>
-
-                    <div style={{ display: "grid", gap: 6 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Raw</div>
-                      <div
-                        style={{
-                          border: "1px solid rgba(0,0,0,0.10)",
-                          borderRadius: 12,
-                          padding: 10,
-                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                          fontSize: 11,
-                          fontWeight: 800,
-                          color: "rgba(0,0,0,0.65)",
-                          background: "rgba(0,0,0,0.02)",
-                          maxHeight: 140,
-                          overflow: "auto",
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {selected.analysisJson ?? selected.outcome ?? "—"}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
+    <div style={{ padding: 14, display: "grid", gap: 12 }}>
+      {!selected ? (
+        <div style={{ color: "rgba(0,0,0,0.45)", fontWeight: 900 }}>
+          Select a job to see summary, tags, transcript and actions.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Key</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Pill title="Checkout ID">{selected.checkoutId}</Pill>
+              {selected.providerCallId ? <Pill title="Provider call id">{selected.providerCallId.slice(0, 14)}…</Pill> : null}
+              {selected.endedReason ? <Pill title="Why call ended">{selected.endedReason}</Pill> : null}
             </div>
           </div>
+
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Insights</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <DispositionPill d={selected.disposition} />
+              <PercentPill label="Buy" value={selected.buyProbability} tone="green" />
+              <PercentPill label="Churn" value={selected.churnProbability} tone="red" />
+              {cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment) ? (
+                <Pill title="Sentiment">{String(cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment)).toUpperCase()}</Pill>
+              ) : null}
+              {typeof selected.analysis?.confidence === "number" ? (
+                <Pill title="Model confidence">{Math.round(clamp01(selected.analysis.confidence) * 100)}% conf</Pill>
+              ) : null}
+            </div>
+
+            {selected.tags.length ? (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {selected.tags.slice(0, 10).map((t) => (
+                  <Pill key={t} title="Tag">{t}</Pill>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>What happened</div>
+            <div
+              style={{
+                border: "1px solid rgba(0,0,0,0.10)",
+                borderRadius: 12,
+                padding: 10,
+                fontWeight: 850,
+                color: "rgba(0,0,0,0.75)",
+                lineHeight: 1.35,
+                background: "rgba(0,0,0,0.02)",
+              }}
+            >
+              {selected.summaryReason ?? "—"}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Recommended next action</div>
+            <div
+              style={{
+                border: "1px solid rgba(59,130,246,0.20)",
+                borderRadius: 12,
+                padding: 10,
+                fontWeight: 900,
+                color: "rgba(30,58,138,0.90)",
+                lineHeight: 1.35,
+                background: "rgba(59,130,246,0.06)",
+              }}
+            >
+              {selected.summaryNextAction ?? "—"}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Suggested follow-up message</div>
+            <div
+              style={{
+                border: "1px solid rgba(0,0,0,0.10)",
+                borderRadius: 12,
+                padding: 10,
+                fontWeight: 850,
+                color: "rgba(0,0,0,0.75)",
+                lineHeight: 1.35,
+                background: "white",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {selected.summaryText ?? "—"}
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <SoftButton
+                type="button"
+                onClick={() => copy(selected.summaryText ?? "")}
+                disabled={!selected.summaryText}
+                style={!selected.summaryText ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+              >
+                Copy follow-up
+              </SoftButton>
+
+              <SoftButton
+                type="button"
+                onClick={() => copy(selected.transcript ?? "")}
+                disabled={!selected.transcript}
+                style={!selected.transcript ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+              >
+                Copy transcript
+              </SoftButton>
+
+              {selected.recordingUrl ? (
+                <a href={selected.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                  <SoftButton type="button" tone="primary">Open recording</SoftButton>
+                </a>
+              ) : (
+                <SoftButton type="button" disabled style={{ opacity: 0.5, cursor: "not-allowed" }}>
+                  Open recording
+                </SoftButton>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Manual</div>
+            <Form method="post">
+              <input type="hidden" name="intent" value="manual_call" />
+              <input type="hidden" name="callJobId" value={selected.id} />
+              <button
+                type="submit"
+                disabled={selected.status !== "QUEUED"}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  background: selected.status === "QUEUED" ? "white" : "#f3f3f3",
+                  cursor: selected.status === "QUEUED" ? "pointer" : "not-allowed",
+                  fontWeight: 950,
+                  width: "100%",
+                }}
+              >
+                Call now
+              </button>
+            </Form>
+          </div>
+
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Raw</div>
+            <div
+              style={{
+                border: "1px solid rgba(0,0,0,0.10)",
+                borderRadius: 12,
+                padding: 10,
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                fontSize: 11,
+                fontWeight: 800,
+                color: "rgba(0,0,0,0.65)",
+                background: "rgba(0,0,0,0.02)",
+                maxHeight: 140,
+                overflow: "auto",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {selected.analysisJson ?? selected.outcome ?? "—"}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  </div>
+</div>
+                
         </s-card>
       </s-section>
     </s-page>
