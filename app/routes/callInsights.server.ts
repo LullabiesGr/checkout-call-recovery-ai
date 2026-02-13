@@ -1,6 +1,4 @@
 // app/callInsights.server.ts
-import db from "./db.server";
-
 export type SupabaseCallSummary = {
   id?: string;
   shop?: string | null;
@@ -74,6 +72,12 @@ export function safeStr(v: any) {
   return v == null ? "" : String(v);
 }
 
+export function formatWhen(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString();
+}
+
 export function buildCartPreview(itemsJson?: string | null): string | null {
   if (!itemsJson) return null;
   try {
@@ -94,10 +98,12 @@ export function buildCartPreview(itemsJson?: string | null): string | null {
   }
 }
 
-export function formatWhen(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString();
+export function isVapiConfiguredFromEnv() {
+  const assistantId = process.env.VAPI_ASSISTANT_ID?.trim();
+  const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID?.trim();
+  const apiKey = process.env.VAPI_API_KEY?.trim();
+  const serverUrl = process.env.VAPI_SERVER_URL?.trim();
+  return Boolean(apiKey) && Boolean(assistantId) && Boolean(phoneNumberId) && Boolean(serverUrl);
 }
 
 function uniq(values: string[]) {
@@ -107,42 +113,6 @@ function uniq(values: string[]) {
 
 function cleanIdList(values: string[]) {
   return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
-}
-
-export function normalizeTag(t: string) {
-  return safeStr(t).trim().toLowerCase().replace(/\s+/g, "_").slice(0, 60);
-}
-
-export function parseTags(sb: SupabaseCallSummary | null | undefined): string[] {
-  if (!sb) return [];
-
-  const raw = sb.tags;
-
-  let arr: string[] = [];
-  if (Array.isArray(raw)) {
-    arr = raw.map((x) => safeStr(x)).filter(Boolean);
-  } else if (typeof raw === "string" && raw.trim()) {
-    arr = raw.split(",").map((x) => safeStr(x)).filter(Boolean);
-  } else if (typeof sb.tagcsv === "string" && sb.tagcsv.trim()) {
-    arr = sb.tagcsv.split(",").map((x) => safeStr(x)).filter(Boolean);
-  }
-
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const t of arr.map(normalizeTag)) {
-    if (!t) continue;
-    if (seen.has(t)) continue;
-    seen.add(t);
-    out.push(t);
-    if (out.length >= 12) break;
-  }
-  return out;
-}
-
-export function cleanSentiment(v?: string | null) {
-  const s = safeStr(v).trim().toLowerCase();
-  if (s === "positive" || s === "neutral" || s === "negative") return s as any;
-  return null;
 }
 
 export function pickLatestJobByCheckout(jobs: Array<any>) {
@@ -162,46 +132,9 @@ export function pickLatestJobByCheckout(jobs: Array<any>) {
   return map;
 }
 
-export function parseTextList(v: any, fallbackText?: string | null, max = 8): string[] {
-  if (Array.isArray(v)) return v.map((x) => safeStr(x)).filter(Boolean).slice(0, max);
-  if (typeof v === "string" && v.trim())
-    return v
-      .split(/\r?\n|,/g)
-      .map((x) => safeStr(x))
-      .filter(Boolean)
-      .slice(0, max);
-  if (fallbackText && fallbackText.trim())
-    return fallbackText
-      .split(/\r?\n|,/g)
-      .map((x) => safeStr(x))
-      .filter(Boolean)
-      .slice(0, max);
-  return [];
-}
-
-export function pickSummary(sb: SupabaseCallSummary | null): string | null {
-  if (!sb) return null;
-  const s = safeStr(sb.summary_clean || sb.summary).trim();
-  return s ? s : null;
-}
-
-export function pickNextAction(sb: SupabaseCallSummary | null): string | null {
-  if (!sb) return null;
-  const s = safeStr(sb.next_best_action || sb.best_next_action).trim();
-  return s ? s : null;
-}
-
 export function pickRecordingUrl(sb: SupabaseCallSummary | null): string | null {
   if (!sb) return null;
   return (sb.recording_url || sb.stereo_recording_url || sb.log_url) ?? null;
-}
-
-export function isVapiConfiguredFromEnv() {
-  const assistantId = process.env.VAPI_ASSISTANT_ID?.trim();
-  const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID?.trim();
-  const apiKey = process.env.VAPI_API_KEY?.trim();
-  const serverUrl = process.env.VAPI_SERVER_URL?.trim();
-  return Boolean(apiKey) && Boolean(assistantId) && Boolean(phoneNumberId) && Boolean(serverUrl);
 }
 
 export async function fetchSupabaseSummaries(opts: {
@@ -214,18 +147,14 @@ export async function fetchSupabaseSummaries(opts: {
 
   const url = process.env.SUPABASE_URL?.trim();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-
   if (!url || !key) return out;
 
   const shop = opts.shop;
-
   const callIds = cleanIdList(opts.callIds ?? []);
   const callJobIds = cleanIdList(opts.callJobIds ?? []);
   const checkoutIds = cleanIdList(opts.checkoutIds ?? []);
 
-  if (callIds.length === 0 && callJobIds.length === 0 && checkoutIds.length === 0) {
-    return out;
-  }
+  if (callIds.length === 0 && callJobIds.length === 0 && checkoutIds.length === 0) return out;
 
   const select = [
     "id",
@@ -305,15 +234,12 @@ export async function fetchSupabaseSummaries(opts: {
       console.error("[SB] fetch failed", r.status, r.statusText, body.slice(0, 800));
       return null as any;
     }
-
     const data = (await r.json()) as SupabaseCallSummary[];
     return Array.isArray(data) ? data : [];
   }
 
   let data = await doFetch(withShopParams);
-  if (data && data.length === 0) {
-    data = await doFetch(params);
-  }
+  if (data && data.length === 0) data = await doFetch(params);
 
   for (const row of data || []) {
     if (!row) continue;
@@ -323,41 +249,4 @@ export async function fetchSupabaseSummaries(opts: {
   }
 
   return out;
-}
-
-export async function readDashboardStats(shop: string) {
-  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-
-  const [
-    abandonedCount7d,
-    convertedCount7d,
-    openCount7d,
-    potentialAgg,
-    queuedCalls,
-    callingNow,
-    completedCalls7d,
-  ] = await Promise.all([
-    db.checkout.count({ where: { shop, status: "ABANDONED", abandonedAt: { gte: since } } }),
-    db.checkout.count({ where: { shop, status: "CONVERTED", updatedAt: { gte: since } } }),
-    db.checkout.count({ where: { shop, status: "OPEN", createdAt: { gte: since } } }),
-    db.checkout.aggregate({
-      where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
-      _sum: { value: true },
-    }),
-    db.callJob.count({ where: { shop, status: "QUEUED" } }),
-    db.callJob.count({ where: { shop, status: "CALLING" } }),
-    db.callJob.count({ where: { shop, status: "COMPLETED", createdAt: { gte: since } } }),
-  ]);
-
-  const potentialRevenue7d = Number((potentialAgg as any)?._sum?.value ?? 0);
-
-  return {
-    abandonedCount7d,
-    convertedCount7d,
-    openCount7d,
-    potentialRevenue7d,
-    queuedCalls,
-    callingNow,
-    completedCalls7d,
-  };
 }

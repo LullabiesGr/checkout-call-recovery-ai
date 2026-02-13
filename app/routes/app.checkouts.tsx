@@ -1,55 +1,142 @@
 // app/routes/app.checkouts.tsx
 import * as React from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData, useRevalidator, useRouteError } from "react-router";
-import { authenticate } from "../shopify.server";
+import { useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { ensureSettings } from "../callRecovery.server";
 import {
   buildCartPreview,
   fetchSupabaseSummaries,
   formatWhen,
-  isVapiConfiguredFromEnv,
   pickLatestJobByCheckout,
   pickRecordingUrl,
   safeStr,
 } from "../callInsights.server";
 
-type CheckoutUIRow = {
-  checkoutId: string;
-  status: "OPEN" | "ABANDONED" | "CONVERTED" | string;
-  createdAt: string;
-  updatedAt: string;
-  abandonedAt: string | null;
-  customerName: string | null;
-  phone: string | null;
-  email: string | null;
-  value: number;
-  currency: string;
-  cartPreview: string | null;
+function safeStr(v: any) {
+  return v == null ? "" : String(v);
+}
 
-  callJobId: string | null;
-  callStatus: string | null;
-  callScheduledFor: string | null;
-  callAttempts: number | null;
-  providerCallId: string | null;
-  recordingUrl: string | null;
+function formatWhen(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString();
+}
 
-  callOutcome: string | null;
-  sentiment: string | null;
-  buyProbabilityPct: number | null;
-  disposition: string | null;
-  aiStatus: string | null;
+function buildCartPreview(itemsJson?: string | null): string | null {
+  if (!itemsJson) return null;
+  try {
+    const items = JSON.parse(itemsJson);
+    if (!Array.isArray(items) || items.length === 0) return null;
+    return items
+      .slice(0, 3)
+      .map((it: any) => {
+        const title = String(it?.title ?? "").trim();
+        const qty = Number(it?.quantity ?? 1);
+        if (!title) return null;
+        return `${title} x${Number.isFinite(qty) ? qty : 1}`;
+      })
+      .filter(Boolean)
+      .join(", ");
+  } catch {
+    return null;
+  }
+}
+
+type SupabaseCallSummary = {
+  call_id: string;
+  call_job_id?: string | null;
+  checkout_id?: string | null;
+  call_outcome?: string | null;
+  buy_probability?: number | null;
+  sentiment?: string | null;
+  tone?: string | null;
+  ai_status?: string | null;
+  recording_url?: string | null;
+  stereo_recording_url?: string | null;
+  log_url?: string | null;
 };
 
-type LoaderData = {
+function uniq(values: string[]) {
+  const s = new Set(values.map((x) => x.trim()).filter(Boolean));
+  return Array.from(s);
+}
+function cleanIdList(values: string[]) {
+  return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
+}
+
+async function fetchSupabaseSummaries(opts: {
   shop: string;
-  currency: string;
-  vapiConfigured: boolean;
-  stats: { queuedCalls: number; callingNow: number };
-  allCheckouts: CheckoutUIRow[];
-};
+  callIds?: string[];
+  callJobIds?: string[];
+  checkoutIds?: string[];
+}): Promise<Map<string, SupabaseCallSummary>> {
+  const out = new Map<string, SupabaseCallSummary>();
+
+  const url = process.env.SUPABASE_URL?.trim();
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  if (!url || !key) return out;
+
+  const callIds = cleanIdList(opts.callIds ?? []);
+  const callJobIds = cleanIdList(opts.callJobIds ?? []);
+  const checkoutIds = cleanIdList(opts.checkoutIds ?? []);
+  if (!callIds.length && !callJobIds.length && !checkoutIds.length) return out;
+
+  const select = [
+    "call_id",
+    "call_job_id",
+    "checkout_id",
+    "call_outcome",
+    "buy_probability",
+    "sentiment",
+    "tone",
+    "ai_status",
+    "recording_url",
+    "stereo_recording_url",
+    "log_url",
+  ].join(",");
+
+  const orParts: string[] = [];
+  if (callIds.length) orParts.push(`call_id.in.(${callIds.join(",")})`);
+  if (callJobIds.length) orParts.push(`call_job_id.in.(${callJobIds.join(",")})`);
+  if (checkoutIds.length) orParts.push(`checkout_id.in.(${checkoutIds.join(",")})`);
+
+  const params = new URLSearchParams();
+  params.set("select", select);
+  params.set("or", `(${orParts.join(",")})`);
+
+  const withShop = new URLSearchParams(params);
+  withShop.set("shop", `eq.${opts.shop}`);
+
+  async function doFetch(p: URLSearchParams) {
+    const endpoint = `${url}/rest/v1/vapi_call_summaries?${p.toString()}`;
+    const r = await fetch(endpoint, {
+      method: "GET",
+      headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" },
+    });
+    if (!r.ok) return [];
+    const data = (await r.json()) as any;
+    return Array.isArray(data) ? (data as SupabaseCallSummary[]) : [];
+  }
+
+  let data = await doFetch(withShop);
+  if (data.length === 0) data = await doFetch(params);
+
+  for (const row of data) {
+    if (row.call_id) out.set(`call:${String(row.call_id)}`, row);
+    if (row.call_job_id) out.set(`job:${String(row.call_job_id)}`, row);
+    if (row.checkout_id) out.set(`co:${String(row.checkout_id)}`, row);
+  }
+
+  return out;
+}
+
+function pickRecordingUrl(sb: SupabaseCallSummary | null): string | null {
+  if (!sb) return null;
+  return (sb.recording_url || sb.stereo_recording_url || sb.log_url) ?? null;
+}
 
 function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
   const tone = props.tone ?? "neutral";
@@ -91,57 +178,58 @@ function CheckoutStatusPill({ status }: { status: string }) {
   return <Pill tone={tone as any}>{s}</Pill>;
 }
 
-function StatusPill({ status }: { status: string }) {
-  const s = safeStr(status).toUpperCase();
-  const tone = s === "COMPLETED" ? "green" : s === "CALLING" ? "blue" : s === "QUEUED" ? "amber" : s === "FAILED" ? "red" : "neutral";
-  return <Pill tone={tone as any}>{s}</Pill>;
-}
+type Row = {
+  checkoutId: string;
+  status: string;
+  updatedAt: string;
+  abandonedAt: string | null;
+  customerName: string | null;
+  phone: string | null;
+  email: string | null;
+  value: number;
+  currency: string;
+  cartPreview: string | null;
 
-function AiStatusPill({ status }: { status: string | null }) {
-  const s = safeStr(status).toLowerCase();
-  if (!s) return <Pill>AI: —</Pill>;
-  if (s === "done") return <Pill tone="green">AI: DONE</Pill>;
-  if (s === "processing") return <Pill tone="blue">AI: RUNNING</Pill>;
-  if (s === "pending") return <Pill tone="amber">AI: PENDING</Pill>;
-  if (s === "error") return <Pill tone="red">AI: ERROR</Pill>;
-  return <Pill>AI: {s.toUpperCase()}</Pill>;
-}
+  callStatus: string | null;
+  callOutcome: string | null;
+  aiStatus: string | null;
+  buyProbabilityPct: number | null;
+  recordingUrl: string | null;
+};
 
-function OutcomeTone(outcome: string | null): "green" | "amber" | "red" | "neutral" {
-  const s = safeStr(outcome).toLowerCase();
-  if (!s) return "neutral";
-  if (s.includes("recovered")) return "green";
-  if (s.includes("needs_followup")) return "amber";
-  if (s.includes("voicemail") || s.includes("no_answer")) return "amber";
-  if (s.includes("not_recovered") || s.includes("wrong_number") || s.includes("not_interested")) return "red";
-  return "neutral";
-}
+type LoaderData = {
+  shop: string;
+  rows: Row[];
+};
 
-function OutcomePill({ outcome }: { outcome: string | null }) {
-  const s = safeStr(outcome);
-  if (!s) return <Pill>—</Pill>;
-  return <Pill tone={OutcomeTone(s)}>{s.toUpperCase()}</Pill>;
-}
-
-function BuyPill({ pct }: { pct: number | null }) {
-  if (pct == null) return <Pill>—</Pill>;
-  const tone = pct >= 70 ? "green" : pct >= 40 ? "amber" : "red";
-  return <Pill tone={tone as any}>{pct}%</Pill>;
+function pickLatestJobByCheckout(jobs: Array<any>) {
+  const map = new Map<string, any>();
+  for (const j of jobs) {
+    const key = String(j.checkoutId ?? "");
+    if (!key) continue;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, j);
+      continue;
+    }
+    const a = new Date(prev.createdAt).getTime();
+    const b = new Date(j.createdAt).getTime();
+    if (Number.isFinite(b) && b > a) map.set(key, j);
+  }
+  return map;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const settings = await ensureSettings(shop);
+  await ensureSettings(shop);
 
-  const [queuedCalls, callingNow, allCheckoutsRaw, allJobsForMap] = await Promise.all([
-    db.callJob.count({ where: { shop, status: "QUEUED" } }),
-    db.callJob.count({ where: { shop, status: "CALLING" } }),
+  const [checkouts, jobs] = await Promise.all([
     db.checkout.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
-      take: 350,
+      take: 300,
       select: {
         checkoutId: true,
         status: true,
@@ -159,33 +247,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     db.callJob.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
-      take: 700,
-      select: {
-        id: true,
-        checkoutId: true,
-        status: true,
-        scheduledFor: true,
-        attempts: true,
-        createdAt: true,
-        providerCallId: true,
-        recordingUrl: true,
-      },
+      take: 800,
+      select: { id: true, checkoutId: true, status: true, scheduledFor: true, attempts: true, createdAt: true, providerCallId: true, recordingUrl: true },
     }),
   ]);
 
-  const latestJobMap = pickLatestJobByCheckout(allJobsForMap);
+  const latestJobMap = pickLatestJobByCheckout(jobs);
 
-  const checkoutIdsAll = allCheckoutsRaw.map((c: any) => String(c.checkoutId)).filter(Boolean);
-
-  const checkoutCallIds = allCheckoutsRaw
-    .map((c: any) => {
+  const checkoutIds = checkouts.map((c) => String(c.checkoutId)).filter(Boolean);
+  const callIds = checkouts
+    .map((c) => {
       const j = latestJobMap.get(String(c.checkoutId)) ?? null;
       return j?.providerCallId ? String(j.providerCallId) : "";
     })
     .filter(Boolean);
-
-  const checkoutJobIds = allCheckoutsRaw
-    .map((c: any) => {
+  const jobIds = checkouts
+    .map((c) => {
       const j = latestJobMap.get(String(c.checkoutId)) ?? null;
       return j?.id ? String(j.id) : "";
     })
@@ -193,17 +270,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const sbMap = await fetchSupabaseSummaries({
     shop,
-    callIds: Array.from(new Set(checkoutCallIds)),
-    callJobIds: Array.from(new Set(checkoutJobIds)),
-    checkoutIds: Array.from(new Set(checkoutIdsAll)),
+    callIds: Array.from(new Set(callIds)),
+    callJobIds: Array.from(new Set(jobIds)),
+    checkoutIds: Array.from(new Set(checkoutIds)),
   });
 
-  const allCheckouts: CheckoutUIRow[] = allCheckoutsRaw.map((c: any) => {
-    const j = latestJobMap.get(String(c.checkoutId)) ?? null;
+  const rows: Row[] = checkouts.map((c) => {
+    const checkoutId = String(c.checkoutId);
+    const j = latestJobMap.get(checkoutId) ?? null;
 
     const callId = j?.providerCallId ? String(j.providerCallId) : "";
     const jobId = j?.id ? String(j.id) : "";
-    const checkoutId = String(c.checkoutId);
 
     const sb =
       (callId ? sbMap.get(`call:${callId}`) : null) ||
@@ -211,13 +288,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       (checkoutId ? sbMap.get(`co:${checkoutId}`) : null) ||
       null;
 
-    const recordingFromSb = pickRecordingUrl(sb);
+    const buyProbabilityPct =
+      typeof sb?.buy_probability === "number" && Number.isFinite(sb.buy_probability)
+        ? Math.round(sb.buy_probability)
+        : null;
 
     return {
       checkoutId,
-      status: c.status,
-      createdAt: c.createdAt.toISOString(),
-      updatedAt: c.updatedAt.toISOString(),
+      status: String(c.status),
+      updatedAt: new Date(c.updatedAt).toISOString(),
       abandonedAt: c.abandonedAt ? new Date(c.abandonedAt).toISOString() : null,
       customerName: c.customerName ?? null,
       phone: c.phone ?? null,
@@ -226,48 +305,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       currency: String(c.currency ?? "USD"),
       cartPreview: buildCartPreview(c.itemsJson ?? null),
 
-      callJobId: j ? String(j.id) : null,
       callStatus: j ? String(j.status) : null,
-      callScheduledFor: j?.scheduledFor ? new Date(j.scheduledFor).toISOString() : null,
-      callAttempts: j ? Number(j.attempts ?? 0) : null,
-      providerCallId: j?.providerCallId ? String(j.providerCallId) : null,
-      recordingUrl: (recordingFromSb ?? (j?.recordingUrl ? String(j.recordingUrl) : null)) ?? null,
-
       callOutcome: sb?.call_outcome ? String(sb.call_outcome) : null,
-      sentiment: sb?.sentiment ? String(sb.sentiment) : sb?.tone ? String(sb.tone) : null,
-      buyProbabilityPct:
-        typeof sb?.buy_probability === "number" && Number.isFinite(sb.buy_probability) ? Math.round(sb.buy_probability) : null,
-      disposition: sb?.disposition ? String(sb.disposition) : null,
       aiStatus: sb?.ai_status ? String(sb.ai_status) : null,
+      buyProbabilityPct,
+      recordingUrl: (pickRecordingUrl(sb) ?? (j?.recordingUrl ? String(j.recordingUrl) : null)) ?? null,
     };
   });
 
-  return {
-    shop,
-    currency: settings.currency || "USD",
-    vapiConfigured: isVapiConfiguredFromEnv(),
-    stats: { queuedCalls, callingNow },
-    allCheckouts,
-  } satisfies LoaderData;
+  return { shop, rows } satisfies LoaderData;
 };
 
-export default function CheckoutsPage() {
-  const { shop, currency, vapiConfigured, stats, allCheckouts } = useLoaderData<typeof loader>();
-  const revalidator = useRevalidator();
-
-  React.useEffect(() => {
-    const active = stats.callingNow > 0 || stats.queuedCalls > 0;
-    if (!active) return;
-    const id = window.setInterval(() => revalidator.revalidate(), 5000);
-    return () => window.clearInterval(id);
-  }, [stats.callingNow, stats.queuedCalls, revalidator]);
-
+export default function Checkouts() {
+  const { shop, rows } = useLoaderData<typeof loader>();
   const [query, setQuery] = React.useState("");
   const q = query.trim().toLowerCase();
 
   const filtered = React.useMemo(() => {
-    if (!q) return allCheckouts;
-    return allCheckouts.filter((c) => {
+    if (!q) return rows;
+    return rows.filter((c) => {
       return (
         safeStr(c.checkoutId).toLowerCase().includes(q) ||
         safeStr(c.customerName).toLowerCase().includes(q) ||
@@ -280,17 +336,7 @@ export default function CheckoutsPage() {
         safeStr(c.aiStatus).toLowerCase().includes(q)
       );
     });
-  }, [allCheckouts, q]);
-
-  const [isNarrow, setIsNarrow] = React.useState(false);
-  React.useEffect(() => {
-    const onResize = () => setIsNarrow(window.innerWidth < 1180);
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  const pageWrap: React.CSSProperties = { padding: 16, minWidth: 0 };
+  }, [rows, q]);
 
   const headerCell: React.CSSProperties = {
     position: "sticky",
@@ -315,63 +361,39 @@ export default function CheckoutsPage() {
   };
 
   return (
-    <div style={pageWrap}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+    <div style={{ padding: 16, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "grid", gap: 4 }}>
           <div style={{ fontWeight: 1100, fontSize: 18, color: "rgba(17,24,39,0.92)" }}>Checkouts</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <Pill title="Shop">{shop}</Pill>
-            <Pill title="Currency">{currency}</Pill>
-            <Pill title="Provider">{vapiConfigured ? "Vapi ready" : "Sim mode"}</Pill>
-            {stats.callingNow > 0 ? <Pill tone="blue">{stats.callingNow} calling</Pill> : null}
-            {stats.queuedCalls > 0 ? <Pill tone="amber">{stats.queuedCalls} queued</Pill> : null}
-          </div>
+          <div style={{ fontWeight: 850, fontSize: 12, color: "rgba(17,24,39,0.55)" }}>{shop}</div>
         </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button
-            type="button"
-            onClick={() => revalidator.revalidate()}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            border: "1px solid rgba(0,0,0,0.10)",
+            background: "rgba(0,0,0,0.02)",
+            borderRadius: 12,
+            padding: "8px 10px",
+            minWidth: 320,
+          }}
+        >
+          <span style={{ fontWeight: 1000, color: "rgba(17,24,39,0.45)" }}>⌕</span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search checkouts..."
             style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.10)",
-              background: "white",
-              cursor: "pointer",
-              fontWeight: 1000,
+              border: "none",
+              outline: "none",
+              background: "transparent",
+              width: "100%",
+              fontWeight: 900,
+              color: "rgba(17,24,39,0.85)",
             }}
-          >
-            Refresh
-          </button>
-
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              border: "1px solid rgba(0,0,0,0.10)",
-              background: "rgba(0,0,0,0.02)",
-              borderRadius: 12,
-              padding: "8px 10px",
-              minWidth: 280,
-            }}
-          >
-            <span style={{ fontWeight: 1000, color: "rgba(17,24,39,0.45)" }}>⌕</span>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search checkouts..."
-              style={{
-                border: "none",
-                outline: "none",
-                background: "transparent",
-                width: "100%",
-                fontWeight: 900,
-                color: "rgba(17,24,39,0.85)",
-              }}
-            />
-          </div>
-
+          />
           <Pill title="Rows">{filtered.length}</Pill>
         </div>
       </div>
@@ -407,7 +429,7 @@ export default function CheckoutsPage() {
             </thead>
             <tbody>
               {filtered.map((c) => (
-                <tr key={c.checkoutId} style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+                <tr key={c.checkoutId}>
                   <td style={{ ...cell, color: "rgba(30,58,138,0.95)" }}>{c.checkoutId}</td>
                   <td style={cell}>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -436,10 +458,16 @@ export default function CheckoutsPage() {
                     </span>
                   </td>
                   <td style={cell}>{formatWhen(c.updatedAt)}</td>
-                  <td style={cell}>{c.callStatus ? <StatusPill status={c.callStatus} /> : <Pill>—</Pill>}</td>
-                  <td style={cell}><AiStatusPill status={c.aiStatus} /></td>
-                  <td style={cell}><OutcomePill outcome={c.callOutcome} /></td>
-                  <td style={cell}><BuyPill pct={c.buyProbabilityPct} /></td>
+                  <td style={cell}>{c.callStatus ? <Pill>{c.callStatus}</Pill> : <Pill>—</Pill>}</td>
+                  <td style={cell}>{c.aiStatus ? <Pill>{`AI: ${c.aiStatus.toUpperCase()}`}</Pill> : <Pill>AI: —</Pill>}</td>
+                  <td style={cell}>
+                    <Pill tone={c.callOutcome?.toLowerCase().includes("recovered") ? "green" : "neutral"}>
+                      {c.callOutcome ? c.callOutcome.toUpperCase() : "—"}
+                    </Pill>
+                  </td>
+                  <td style={cell}>
+                    {c.buyProbabilityPct == null ? <Pill>—</Pill> : <Pill>{c.buyProbabilityPct}%</Pill>}
+                  </td>
                   <td style={cell}>
                     {c.recordingUrl ? (
                       <a href={c.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
@@ -451,7 +479,7 @@ export default function CheckoutsPage() {
                             border: "1px solid rgba(59,130,246,0.30)",
                             background: "rgba(59,130,246,0.10)",
                             cursor: "pointer",
-                            fontWeight: 950,
+                            fontWeight: 1000,
                             fontSize: 12,
                           }}
                         >
@@ -466,11 +494,10 @@ export default function CheckoutsPage() {
                           padding: "8px 10px",
                           borderRadius: 12,
                           border: "1px solid rgba(0,0,0,0.10)",
-                          background: "white",
-                          fontWeight: 950,
+                          background: "rgba(0,0,0,0.03)",
+                          fontWeight: 1000,
                           fontSize: 12,
-                          opacity: 0.5,
-                          cursor: "not-allowed",
+                          opacity: 0.6,
                         }}
                       >
                         Open
@@ -482,10 +509,6 @@ export default function CheckoutsPage() {
             </tbody>
           </table>
         </div>
-      </div>
-
-      <div style={{ marginTop: 10, fontWeight: 900, fontSize: 12, color: "rgba(17,24,39,0.45)" }}>
-        {vapiConfigured ? "Live updates every 5s when calls are active." : "Vapi not configured in ENV. Calls can run in sim mode."}
       </div>
     </div>
   );

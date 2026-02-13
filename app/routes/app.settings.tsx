@@ -6,6 +6,10 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
 import { ensureSettings } from "../callRecovery.server";
 
+import type { HeadersFunction } from "react-router";
+import { useRouteError } from "react-router";
+import { boundary } from "@shopify/shopify-app-react-router/server";
+
 type LoaderData = {
   shop: string;
   settings: {
@@ -200,6 +204,19 @@ export default function SettingsRoute() {
         </s-stack>
       </s-card>
     </s-page>
+  );
+}
+
+
+
+export default function SettingsRoute() {
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ fontWeight: 1100, fontSize: 18, color: "rgba(17,24,39,0.92)" }}>Settings</div>
+      <div style={{ marginTop: 8, fontWeight: 900, color: "rgba(17,24,39,0.55)" }}>
+        Replace this file with your existing settings screen.
+      </div>
+    </div>
   );
 }
 
