@@ -24,7 +24,6 @@ type Analysis = {
   followUp?: string;
   confidence?: number;
 
-  // pro fields
   answered?: boolean;
   disposition?:
     | "interested"
@@ -63,7 +62,6 @@ type Row = {
 
   outcome?: string | null;
 
-  // derived
   analysis: Analysis | null;
   answered: "answered" | "no_answer" | "unknown";
   disposition:
@@ -136,12 +134,9 @@ function stripFences(s: string) {
   const t = safeStr(s).trim();
   if (!t) return "";
 
-  // remove any ```lang ... ``` blocks even if they are not at the start
-  // take the first fenced block if exists
   const fence = /```[a-zA-Z]*\s*([\s\S]*?)\s*```/m.exec(t);
   if (fence && fence[1]) return String(fence[1]).trim();
 
-  // also handle inline ``` ... ``` without newlines
   const fence2 = /```([\s\S]*?)```/m.exec(t);
   if (fence2 && fence2[1]) return String(fence2[1]).trim();
 
@@ -152,21 +147,17 @@ function tryParseJsonObject(s: string): any | null {
   const raw0 = safeStr(s);
   if (!raw0.trim()) return null;
 
-  // 1) try to extract from fenced code blocks, or return original
   const raw = stripFences(raw0).trim();
   if (!raw) return null;
 
-  // helper: parse object from a candidate string (direct or double-parsed)
   const parseMaybe = (candidate: string): any | null => {
     const c = candidate.trim();
     if (!c) return null;
 
-    // direct parse
     try {
       const p = JSON.parse(c);
       if (p && typeof p === "object") return p;
 
-      // if it's a JSON string that contains JSON, parse again
       if (typeof p === "string") {
         try {
           const p2 = JSON.parse(p);
@@ -175,11 +166,11 @@ function tryParseJsonObject(s: string): any | null {
       }
     } catch {}
 
-    // if looks like escaped json, unescape common patterns then retry
     if (c.includes('\\"') || c.includes("\\n") || c.includes("\\t")) {
       try {
-        // Wrap as JSON string then parse to unescape
-        const unescaped = JSON.parse(`"${c.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
+        const unescaped = JSON.parse(
+          `"${c.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+        );
         if (typeof unescaped === "string") {
           try {
             const p3 = JSON.parse(unescaped);
@@ -192,11 +183,9 @@ function tryParseJsonObject(s: string): any | null {
     return null;
   };
 
-  // 2) best attempt: parse whole string (maybe already json)
   const whole = parseMaybe(raw);
   if (whole) return whole;
 
-  // 3) extract first {...} block from anywhere in the text and parse it
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start >= 0 && end > start) {
@@ -205,7 +194,6 @@ function tryParseJsonObject(s: string): any | null {
     if (obj) return obj;
   }
 
-  // 4) sometimes the original (before stripFences) has braces but stripFences removed wrong part
   const r2 = raw0.trim();
   const s2 = r2.indexOf("{");
   const e2 = r2.lastIndexOf("}");
@@ -245,16 +233,10 @@ function cleanSentiment(v?: string | null) {
 }
 
 function pickAnalysis(j: any): Analysis | null {
-  // Priority:
-  // 1) analysisJson column (preferred structured)
-  // 2) outcome column if it contains JSON (your current reality)
-  // 3) reason/nextAction/followUp columns if they are plain strings (not JSON blobs)
-
   const a1 = j.analysisJson ? tryParseJsonObject(j.analysisJson) : null;
   const a2 = !a1 && j.outcome ? tryParseJsonObject(j.outcome) : null;
   const a = a1 || a2;
 
-  // If we have any JSON object, normalize it to Analysis
   const fromJson = (obj: any): Analysis | null => {
     if (!obj || typeof obj !== "object") return null;
 
@@ -263,50 +245,66 @@ function pickAnalysis(j: any): Analysis | null {
       : [];
 
     const sentiment = cleanSentiment(obj.sentiment) ?? undefined;
-    const confidence = typeof obj.confidence === "number" ? clamp01(obj.confidence) : undefined;
+    const confidence =
+      typeof obj.confidence === "number" ? clamp01(obj.confidence) : undefined;
 
     const buyProbability =
-      typeof obj.buyProbability === "number" ? clamp01(obj.buyProbability) : undefined;
+      typeof obj.buyProbability === "number"
+        ? clamp01(obj.buyProbability)
+        : undefined;
 
     const churnProbability =
-      typeof obj.churnProbability === "number" ? clamp01(obj.churnProbability) : undefined;
+      typeof obj.churnProbability === "number"
+        ? clamp01(obj.churnProbability)
+        : undefined;
 
     const dispositionRaw = safeStr(obj.disposition).trim().toLowerCase();
-    const disposition =
-      ["interested","needs_support","call_back_later","not_interested","wrong_number","unknown"].includes(dispositionRaw)
-        ? (dispositionRaw as any)
-        : undefined;
+    const disposition = [
+      "interested",
+      "needs_support",
+      "call_back_later",
+      "not_interested",
+      "wrong_number",
+      "unknown",
+    ].includes(dispositionRaw)
+      ? (dispositionRaw as any)
+      : undefined;
 
     return {
       sentiment,
       tags,
       reason: typeof obj.reason === "string" ? obj.reason.trim() : undefined,
-      nextAction: typeof obj.nextAction === "string" ? obj.nextAction.trim() : undefined,
-      followUp: typeof obj.followUp === "string" ? obj.followUp.trim() : undefined,
+      nextAction:
+        typeof obj.nextAction === "string" ? obj.nextAction.trim() : undefined,
+      followUp:
+        typeof obj.followUp === "string" ? obj.followUp.trim() : undefined,
       confidence,
       answered: typeof obj.answered === "boolean" ? obj.answered : undefined,
       disposition,
       buyProbability,
       churnProbability,
-      shortSummary: typeof obj.shortSummary === "string" ? obj.shortSummary.trim() : undefined,
+      shortSummary:
+        typeof obj.shortSummary === "string" ? obj.shortSummary.trim() : undefined,
     };
   };
 
   const parsed = a ? fromJson(a) : null;
 
-  // If no JSON found, fall back to columns (ONLY if they are plain strings)
   if (!parsed) {
     const reasonPlain =
       j.reason && !tryParseJsonObject(j.reason) ? safeStr(j.reason).trim() : "";
 
     const nextActionPlain =
-      j.nextAction && !tryParseJsonObject(j.nextAction) ? safeStr(j.nextAction).trim() : "";
+      j.nextAction && !tryParseJsonObject(j.nextAction)
+        ? safeStr(j.nextAction).trim()
+        : "";
 
     const followUpPlain =
-      j.followUp && !tryParseJsonObject(j.followUp) ? safeStr(j.followUp).trim() : "";
+      j.followUp && !tryParseJsonObject(j.followUp)
+        ? safeStr(j.followUp).trim()
+        : "";
 
     const tags = splitTags(j.tagsCsv);
-
     const sentiment = cleanSentiment(j.sentiment) ?? undefined;
 
     if (!reasonPlain && !nextActionPlain && !followUpPlain && tags.length === 0 && !sentiment) {
@@ -324,7 +322,6 @@ function pickAnalysis(j: any): Analysis | null {
 
   return parsed;
 }
-
 
 function deriveFromJob(j: any, analysis: Analysis | null) {
   const ended = safeStr(j.endedReason).toLowerCase();
@@ -345,15 +342,14 @@ function deriveFromJob(j: any, analysis: Analysis | null) {
     analysis?.answered === true || answeredByEndedReason
       ? "answered"
       : analysis?.answered === false || noAnswerByEndedReason
-        ? "no_answer"
-        : "unknown";
+      ? "no_answer"
+      : "unknown";
 
   const sentiment = cleanSentiment(analysis?.sentiment ?? j.sentiment);
-  const tags =
-    (analysis?.tags?.length ? analysis.tags : splitTags(j.tagsCsv))
-      .map(normalizeTag)
-      .filter(Boolean)
-      .slice(0, 12);
+  const tags = (analysis?.tags?.length ? analysis.tags : splitTags(j.tagsCsv))
+    .map(normalizeTag)
+    .filter(Boolean)
+    .slice(0, 12);
 
   const has = (t: string) => tags.includes(t);
 
@@ -361,35 +357,49 @@ function deriveFromJob(j: any, analysis: Analysis | null) {
 
   const disposition: Row["disposition"] =
     dispositionFromAnalysis &&
-    ["interested","needs_support","call_back_later","not_interested","wrong_number","unknown"].includes(dispositionFromAnalysis)
+    [
+      "interested",
+      "needs_support",
+      "call_back_later",
+      "not_interested",
+      "wrong_number",
+      "unknown",
+    ].includes(dispositionFromAnalysis)
       ? dispositionFromAnalysis
-      : has("wrong_number") ? "wrong_number"
-        : has("not_interested") ? "not_interested"
-          : has("call_back_later") ? "call_back_later"
-            : has("needs_support") ? "needs_support"
-              : sentiment === "positive" ? "interested"
-                : "unknown";
+      : has("wrong_number")
+      ? "wrong_number"
+      : has("not_interested")
+      ? "not_interested"
+      : has("call_back_later")
+      ? "call_back_later"
+      : has("needs_support")
+      ? "needs_support"
+      : sentiment === "positive"
+      ? "interested"
+      : "unknown";
 
-  // buy/churn: prefer model outputs, else fallback heuristic
   let buy =
     typeof analysis?.buyProbability === "number"
       ? clamp01(analysis.buyProbability)
       : (() => {
           let p =
-            sentiment === "positive" ? 0.75 :
-            sentiment === "neutral" ? 0.45 :
-            sentiment === "negative" ? 0.15 :
-            0.35;
+            sentiment === "positive"
+              ? 0.75
+              : sentiment === "neutral"
+              ? 0.45
+              : sentiment === "negative"
+              ? 0.15
+              : 0.35;
 
-          if (has("call_back_later")) p += 0.10;
+          if (has("call_back_later")) p += 0.1;
           if (has("needs_support")) p += 0.05;
           if (has("coupon_request")) p += 0.08;
           if (has("shipping")) p -= 0.05;
-          if (has("price")) p -= 0.10;
+          if (has("price")) p -= 0.1;
           if (has("trust")) p -= 0.12;
           if (has("not_interested")) p -= 0.35;
-          if (has("wrong_number")) p -= 0.60;
-          if (answered === "no_answer") p -= 0.20;
+          if (has("wrong_number")) p -= 0.6;
+          if (answered === "no_answer") p -= 0.2;
 
           return clamp01(p);
         })();
@@ -403,26 +413,24 @@ function deriveFromJob(j: any, analysis: Analysis | null) {
     analysis?.shortSummary?.trim()
       ? analysis.shortSummary.trim()
       : analysis?.reason?.trim()
-        ? analysis.reason.trim()
-        : j.reason && !tryParseJsonObject(j.reason)
-          ? safeStr(j.reason).trim()
-          : null;
+      ? analysis.reason.trim()
+      : j.reason && !tryParseJsonObject(j.reason)
+      ? safeStr(j.reason).trim()
+      : null;
 
-    const nextAction =
+  const nextAction =
     analysis?.nextAction?.trim()
       ? analysis.nextAction.trim()
       : j.nextAction && !tryParseJsonObject(j.nextAction)
-        ? safeStr(j.nextAction).trim()
-        : null;
+      ? safeStr(j.nextAction).trim()
+      : null;
 
-
-    const summaryText =
+  const summaryText =
     analysis?.followUp?.trim()
       ? analysis.followUp.trim()
       : j.followUp && !tryParseJsonObject(j.followUp)
-        ? safeStr(j.followUp).trim()
-        : null;
-
+      ? safeStr(j.followUp).trim()
+      : null;
 
   return {
     answered,
@@ -446,12 +454,12 @@ function Pill(props: {
     tone === "green"
       ? { bg: "rgba(16,185,129,0.10)", bd: "rgba(16,185,129,0.25)", tx: "#065f46" }
       : tone === "blue"
-        ? { bg: "rgba(59,130,246,0.10)", bd: "rgba(59,130,246,0.25)", tx: "#1e3a8a" }
-        : tone === "amber"
-          ? { bg: "rgba(245,158,11,0.10)", bd: "rgba(245,158,11,0.25)", tx: "#92400e" }
-          : tone === "red"
-            ? { bg: "rgba(239,68,68,0.10)", bd: "rgba(239,68,68,0.25)", tx: "#7f1d1d" }
-            : { bg: "rgba(0,0,0,0.04)", bd: "rgba(0,0,0,0.10)", tx: "rgba(0,0,0,0.75)" };
+      ? { bg: "rgba(59,130,246,0.10)", bd: "rgba(59,130,246,0.25)", tx: "#1e3a8a" }
+      : tone === "amber"
+      ? { bg: "rgba(245,158,11,0.10)", bd: "rgba(245,158,11,0.25)", tx: "#92400e" }
+      : tone === "red"
+      ? { bg: "rgba(239,68,68,0.10)", bd: "rgba(239,68,68,0.25)", tx: "#7f1d1d" }
+      : { bg: "rgba(0,0,0,0.04)", bd: "rgba(0,0,0,0.10)", tx: "rgba(0,0,0,0.75)" };
 
   return (
     <span
@@ -477,36 +485,60 @@ function Pill(props: {
 function StatusPill({ status }: { status: string }) {
   const s = safeStr(status).toUpperCase();
   const tone =
-    s === "COMPLETED" ? "green" :
-    s === "CALLING" ? "blue" :
-    s === "QUEUED" ? "amber" :
-    s === "FAILED" ? "red" :
-    "neutral";
+    s === "COMPLETED"
+      ? "green"
+      : s === "CALLING"
+      ? "blue"
+      : s === "QUEUED"
+      ? "amber"
+      : s === "FAILED"
+      ? "red"
+      : "neutral";
   return <Pill tone={tone as any}>{s}</Pill>;
 }
 
 function AnsweredPill({ answered }: { answered: Row["answered"] }) {
-  if (answered === "answered") return <Pill tone="green" title="Customer picked up / engaged">Answered</Pill>;
-  if (answered === "no_answer") return <Pill tone="amber" title="No pick up / voicemail / busy">No answer</Pill>;
+  if (answered === "answered")
+    return <Pill tone="green" title="Customer picked up / engaged">Answered</Pill>;
+  if (answered === "no_answer")
+    return <Pill tone="amber" title="No pick up / voicemail / busy">No answer</Pill>;
   return <Pill title="Not enough signal">Unknown</Pill>;
 }
 
 function DispositionPill({ d }: { d: Row["disposition"] }) {
-  if (d === "interested") return <Pill tone="green" title="Positive buying intent">Interested</Pill>;
-  if (d === "needs_support") return <Pill tone="blue" title="Needs help to complete order">Needs support</Pill>;
-  if (d === "call_back_later") return <Pill tone="amber" title="Asked to be contacted later">Call back</Pill>;
-  if (d === "not_interested") return <Pill tone="red" title="Explicit rejection">Not interested</Pill>;
-  if (d === "wrong_number") return <Pill tone="red" title="Wrong phone number">Wrong number</Pill>;
+  if (d === "interested")
+    return <Pill tone="green" title="Positive buying intent">Interested</Pill>;
+  if (d === "needs_support")
+    return <Pill tone="blue" title="Needs help to complete order">Needs support</Pill>;
+  if (d === "call_back_later")
+    return <Pill tone="amber" title="Asked to be contacted later">Call back</Pill>;
+  if (d === "not_interested")
+    return <Pill tone="red" title="Explicit rejection">Not interested</Pill>;
+  if (d === "wrong_number")
+    return <Pill tone="red" title="Wrong phone number">Wrong number</Pill>;
   return <Pill title="No clear category">Unknown</Pill>;
 }
 
-function PercentPill({ label, value, tone }: { label: string; value: number | null; tone: "green" | "red" | "blue" | "amber" }) {
+function PercentPill(props: {
+  label: string;
+  value: number | null;
+  tone: "green" | "red" | "blue" | "amber";
+}) {
+  const { label, value, tone } = props;
   if (value == null) return <Pill title="Not available">—</Pill>;
   const pct = Math.round(clamp01(value) * 100);
-  return <Pill tone={tone} title={`${label} ${pct}%`}>{pct}%</Pill>;
+  return (
+    <Pill tone={tone} title={`${label} ${pct}%`}>
+      {pct}%
+    </Pill>
+  );
 }
 
-function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "ghost" }) {
+function SoftButton(
+  props: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    tone?: "primary" | "ghost";
+  }
+) {
   const tone = props.tone ?? "ghost";
   const base: React.CSSProperties = {
     padding: "7px 10px",
@@ -520,7 +552,11 @@ function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { ton
   };
   const styles =
     tone === "primary"
-      ? { ...base, border: "1px solid rgba(59,130,246,0.30)", background: "rgba(59,130,246,0.08)" }
+      ? {
+          ...base,
+          border: "1px solid rgba(59,130,246,0.30)",
+          background: "rgba(59,130,246,0.08)",
+        }
       : base;
 
   const { tone: _tone, style, ...rest } = props as any;
@@ -533,58 +569,52 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const settings = await ensureSettings(shop);
 
-  // pipeline (NO enqueue here)
   await syncAbandonedCheckoutsFromShopify({ admin, shop, limit: 50 });
   await markAbandonedByDelay(shop, settings.delayMinutes);
 
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const [
-    abandonedCount7d,
-    potentialAgg,
-    queuedCalls,
-    completedCalls7d,
-    recentJobs,
-  ] = await Promise.all([
-    db.checkout.count({
-      where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
-    }),
-    db.checkout.aggregate({
-      where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
-      _sum: { value: true },
-    }),
-    db.callJob.count({ where: { shop, status: "QUEUED" } }),
-    db.callJob.count({
-      where: { shop, status: "COMPLETED", createdAt: { gte: since } },
-    }),
-    db.callJob.findMany({
-      where: { shop },
-      orderBy: { createdAt: "desc" },
-      take: 25,
-      select: {
-        id: true,
-        checkoutId: true,
-        status: true,
-        scheduledFor: true,
-        attempts: true,
-        createdAt: true,
+  const [abandonedCount7d, potentialAgg, queuedCalls, completedCalls7d, recentJobs] =
+    await Promise.all([
+      db.checkout.count({
+        where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
+      }),
+      db.checkout.aggregate({
+        where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
+        _sum: { value: true },
+      }),
+      db.callJob.count({ where: { shop, status: "QUEUED" } }),
+      db.callJob.count({
+        where: { shop, status: "COMPLETED", createdAt: { gte: since } },
+      }),
+      db.callJob.findMany({
+        where: { shop },
+        orderBy: { createdAt: "desc" },
+        take: 25,
+        select: {
+          id: true,
+          checkoutId: true,
+          status: true,
+          scheduledFor: true,
+          attempts: true,
+          createdAt: true,
 
-        providerCallId: true,
-        recordingUrl: true,
-        endedReason: true,
-        transcript: true,
+          providerCallId: true,
+          recordingUrl: true,
+          endedReason: true,
+          transcript: true,
 
-        sentiment: true,
-        tagsCsv: true,
-        reason: true,
-        nextAction: true,
-        followUp: true,
-        analysisJson: true,
+          sentiment: true,
+          tagsCsv: true,
+          reason: true,
+          nextAction: true,
+          followUp: true,
+          analysisJson: true,
 
-        outcome: true,
-      },
-    }),
-  ]);
+          outcome: true,
+        },
+      }),
+    ]);
 
   const ids = recentJobs.map((j) => j.checkoutId);
   const related =
@@ -682,7 +712,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!vapiOk) {
         await db.callJob.update({
           where: { id: job.id },
-          data: { status: "COMPLETED", outcome: `SIMULATED_CALL_OK phone=${job.phone}` },
+          data: {
+            status: "COMPLETED",
+            outcome: `SIMULATED_CALL_OK phone=${job.phone}`,
+          },
         });
         continue;
       }
@@ -711,7 +744,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           const next = new Date(Date.now() + retryMinutes * 60 * 1000);
           await db.callJob.update({
             where: { id: job.id },
-            data: { status: "QUEUED", scheduledFor: next, outcome: `RETRY_SCHEDULED in ${retryMinutes}m` },
+            data: {
+              status: "QUEUED",
+              scheduledFor: next,
+              outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
+            },
           });
         }
       }
@@ -728,14 +765,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!vapiOk) {
       await db.callJob.updateMany({
         where: { id: callJobId, shop },
-        data: { outcome: "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)" },
+        data: {
+          outcome:
+            "Missing Vapi ENV (VAPI_API_KEY/VAPI_ASSISTANT_ID/VAPI_PHONE_NUMBER_ID)",
+        },
       });
       return redirectBack();
     }
 
     const locked = await db.callJob.updateMany({
       where: { id: callJobId, shop, status: "QUEUED" },
-      data: { status: "CALLING", attempts: { increment: 1 }, provider: "vapi", outcome: null },
+      data: {
+        status: "CALLING",
+        attempts: { increment: 1 },
+        provider: "vapi",
+        outcome: null,
+      },
     });
     if (locked.count === 0) return redirectBack();
 
@@ -765,7 +810,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const next = new Date(Date.now() + retryMinutes * 60 * 1000);
         await db.callJob.updateMany({
           where: { id: callJobId, shop },
-          data: { status: "QUEUED", scheduledFor: next, outcome: `RETRY_SCHEDULED in ${retryMinutes}m` },
+          data: {
+            status: "QUEUED",
+            scheduledFor: next,
+            outcome: `RETRY_SCHEDULED in ${retryMinutes}m`,
+          },
         });
       }
     }
@@ -828,17 +877,15 @@ export default function Dashboard() {
     color: "rgba(0,0,0,0.78)",
   };
 
-// ⬇️ ΒΑΛΕ ΑΥΤΟ ΜΕΣΑ ΣΤΟ Dashboard() ΠΡΙΝ ΤΟ return (ακριβώς πριν το `return (`)
+  // responsive breakpoint for embedded iframe widths
+  const [isNarrow, setIsNarrow] = React.useState(false);
 
-// responsive breakpoint για embedded iframe widths
-const [isNarrow, setIsNarrow] = React.useState(false);
-
-React.useEffect(() => {
-  const onResize = () => setIsNarrow(window.innerWidth < 1100);
-  onResize();
-  window.addEventListener("resize", onResize);
-  return () => window.removeEventListener("resize", onResize);
-}, []);
+  React.useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 1100);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   return (
     <s-page heading="Checkout Call Recovery AI">
@@ -914,22 +961,24 @@ React.useEffect(() => {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "minmax(720px, 1fr) 420px",
+              gridTemplateColumns: isNarrow ? "1fr" : "minmax(0, 1fr) 420px",
               gap: 14,
               alignItems: "start",
+              minWidth: 0,
             }}
           >
-            {/* LEFT: TABLE (full workspace, no tiny bar) */}
+            {/* LEFT: TABLE */}
             <div
               style={{
                 border: "1px solid rgba(0,0,0,0.10)",
                 borderRadius: 14,
                 overflow: "hidden",
                 background: "white",
+                minWidth: 0,
               }}
             >
               <div style={{ maxHeight: 420, overflow: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
                   <thead>
                     <tr>
                       <th style={headerCell} title="Abandoned checkout identifier">Checkout</th>
@@ -982,357 +1031,273 @@ React.useEffect(() => {
                             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                               <StatusPill status={j.status} />
                               {cleanSentiment(j.analysis?.sentiment ?? j.sentiment) ? (
-                                <Pill title="Sentiment">{String(cleanSentiment(j.analysis?.sentiment ?? j.sentiment)).toUpperCase()}</Pill>
+                                <Pill title="Sentiment">
+                                  {String(cleanSentiment(j.analysis?.sentiment ?? j.sentiment)).toUpperCase()}
+                                </Pill>
                               ) : null}
                             </div>
                           </td>
 
                           <td style={cell}>
-                            
+                            <div style={{ display: "grid", gap: 4 }}>
+                              <div style={{ fontWeight: 950 }}>{formatWhen(j.scheduledFor)}</div>
+                              <div style={{ fontSize: 11, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
+                                Created {formatWhen(j.createdAt)}
+                              </div>
+                            </div>
+                          </td>
 
-// responsive breakpoint για embedded iframe widths
-const [isNarrow, setIsNarrow] = React.useState(false);
+                          <td style={cell}>{j.attempts}</td>
 
-React.useEffect(() => {
-  const onResize = () => setIsNarrow(window.innerWidth < 1100);
-  onResize();
-  window.addEventListener("resize", onResize);
-  return () => window.removeEventListener("resize", onResize);
-}, []);
+                          <td style={cell}><AnsweredPill answered={j.answered} /></td>
 
+                          <td style={cell}><DispositionPill d={j.disposition} /></td>
 
+                          <td style={cell}><PercentPill label="Buy" value={j.buyProbability} tone="green" /></td>
 
-<div
-  style={{
-    display: "grid",
-    gridTemplateColumns: isNarrow ? "1fr" : "minmax(0, 1fr) 420px",
-    gap: 14,
-    alignItems: "start",
-    minWidth: 0,
-  }}
->
-  {/* LEFT: TABLE */}
-  <div
-    style={{
-      border: "1px solid rgba(0,0,0,0.10)",
-      borderRadius: 14,
-      overflow: "hidden",
-      background: "white",
-      minWidth: 0, // CRITICAL
-    }}
-  >
-    <div style={{ maxHeight: 420, overflow: "auto" }}>
-      {/* table gets horizontal scroll INSIDE left panel, not cutting the whole UI */}
-      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
-        <thead>
-          <tr>
-            <th style={headerCell} title="Abandoned checkout identifier">Checkout</th>
-            <th style={headerCell} title="Customer name if available">Customer</th>
-            <th style={headerCell} title="Top cart items preview">Cart</th>
-            <th style={headerCell} title="Job state in the pipeline">Status</th>
-            <th style={headerCell} title="Scheduled time (and created time in details)">Scheduled</th>
-            <th style={headerCell} title="Times dialed / attempted">Attempts</th>
-            <th style={headerCell} title="Did the customer engage?">Answered</th>
-            <th style={headerCell} title="Outcome category (from AI + tags)">Disposition</th>
-            <th style={headerCell} title="Estimated probability of purchase">Buy</th>
-            <th style={headerCell} title="Estimated risk of losing the sale">Churn</th>
-            <th style={headerCell} title="Recommended next step">Next action</th>
-          </tr>
-        </thead>
+                          <td style={cell}><PercentPill label="Churn" value={j.churnProbability} tone="red" /></td>
 
-        <tbody>
-          {recentJobs.map((j) => {
-            const isSelected = j.id === selectedId;
-            return (
-              <tr
-                key={j.id}
-                onClick={() => setSelectedId(j.id)}
-                style={{
-                  background: isSelected ? "rgba(59,130,246,0.06)" : "white",
-                  cursor: "pointer",
-                }}
-              >
-                <td style={cell}>{j.checkoutId}</td>
+                          <td style={{ ...cell, maxWidth: 260 }}>
+                            {j.summaryNextAction ? (
+                              <span
+                                title={j.summaryNextAction}
+                                style={{
+                                  display: "inline-block",
+                                  maxWidth: 260,
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  fontWeight: 900,
+                                }}
+                              >
+                                {j.summaryNextAction}
+                              </span>
+                            ) : (
+                              <span style={{ color: "rgba(0,0,0,0.35)", fontWeight: 900 }}>—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
 
-                <td style={cell}>{j.customerName ?? "-"}</td>
-
-                <td style={{ ...cell, maxWidth: 260 }}>
-                  <span
-                    title={j.cartPreview ?? ""}
-                    style={{
-                      display: "inline-block",
-                      maxWidth: 260,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      fontWeight: 850,
-                    }}
-                  >
-                    {j.cartPreview ?? "-"}
-                  </span>
-                </td>
-
-                <td style={cell}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <StatusPill status={j.status} />
-                    {cleanSentiment(j.analysis?.sentiment ?? j.sentiment) ? (
-                      <Pill title="Sentiment">
-                        {String(cleanSentiment(j.analysis?.sentiment ?? j.sentiment)).toUpperCase()}
-                      </Pill>
-                    ) : null}
-                  </div>
-                </td>
-
-                <td style={cell}>
+            {/* RIGHT: DETAILS PANEL */}
+            <div
+              style={{
+                position: isNarrow ? "relative" : "sticky",
+                top: isNarrow ? undefined : 12,
+                border: "1px solid rgba(0,0,0,0.10)",
+                borderRadius: 14,
+                background: "white",
+                overflow: "hidden",
+                minWidth: 0,
+                width: isNarrow ? "100%" : 420,
+                justifySelf: "stretch",
+              }}
+            >
+              <div style={{ padding: 14, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
                   <div style={{ display: "grid", gap: 4 }}>
-                    <div style={{ fontWeight: 950 }}>{formatWhen(j.scheduledFor)}</div>
-                    <div style={{ fontSize: 11, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
-                      Created {formatWhen(j.createdAt)}
+                    <div style={{ fontSize: 13, fontWeight: 950, color: "rgba(0,0,0,0.75)" }}>
+                      Call details
+                    </div>
+                    <div style={{ fontSize: 12, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
+                      {selected ? `Created ${formatWhen(selected.createdAt)}` : "Select a row"}
                     </div>
                   </div>
-                </td>
 
-                <td style={cell}>{j.attempts}</td>
-
-                <td style={cell}><AnsweredPill answered={j.answered} /></td>
-
-                <td style={cell}><DispositionPill d={j.disposition} /></td>
-
-                <td style={cell}><PercentPill label="Buy" value={j.buyProbability} tone="green" /></td>
-
-                <td style={cell}><PercentPill label="Churn" value={j.churnProbability} tone="red" /></td>
-
-                <td style={{ ...cell, maxWidth: 260 }}>
-                  {j.summaryNextAction ? (
-                    <span
-                      title={j.summaryNextAction}
-                      style={{
-                        display: "inline-block",
-                        maxWidth: 260,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        fontWeight: 900,
-                      }}
-                    >
-                      {j.summaryNextAction}
-                    </span>
-                  ) : (
-                    <span style={{ color: "rgba(0,0,0,0.35)", fontWeight: 900 }}>—</span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  {/* RIGHT: DETAILS PANEL */}
-  <div
-    style={{
-      position: isNarrow ? "relative" : "sticky",
-      top: isNarrow ? undefined : 12,
-      border: "1px solid rgba(0,0,0,0.10)",
-      borderRadius: 14,
-      background: "white",
-      overflow: "hidden",
-      minWidth: 0,
-      width: isNarrow ? "100%" : 420,
-      justifySelf: "stretch",
-    }}
-  >
-    <div style={{ padding: 14, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-        <div style={{ display: "grid", gap: 4 }}>
-          <div style={{ fontSize: 13, fontWeight: 950, color: "rgba(0,0,0,0.75)" }}>
-            Call details
-          </div>
-          <div style={{ fontSize: 12, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
-            {selected ? `Created ${formatWhen(selected.createdAt)}` : "Select a row"}
-          </div>
-        </div>
-
-        {selected ? (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <StatusPill status={selected.status} />
-            <AnsweredPill answered={selected.answered} />
-          </div>
-        ) : null}
-      </div>
-    </div>
-
-    <div style={{ padding: 14, display: "grid", gap: 12 }}>
-      {!selected ? (
-        <div style={{ color: "rgba(0,0,0,0.45)", fontWeight: 900 }}>
-          Select a job to see summary, tags, transcript and actions.
-        </div>
-      ) : (
-        <>
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Key</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Pill title="Checkout ID">{selected.checkoutId}</Pill>
-              {selected.providerCallId ? <Pill title="Provider call id">{selected.providerCallId.slice(0, 14)}…</Pill> : null}
-              {selected.endedReason ? <Pill title="Why call ended">{selected.endedReason}</Pill> : null}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Insights</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <DispositionPill d={selected.disposition} />
-              <PercentPill label="Buy" value={selected.buyProbability} tone="green" />
-              <PercentPill label="Churn" value={selected.churnProbability} tone="red" />
-              {cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment) ? (
-                <Pill title="Sentiment">{String(cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment)).toUpperCase()}</Pill>
-              ) : null}
-              {typeof selected.analysis?.confidence === "number" ? (
-                <Pill title="Model confidence">{Math.round(clamp01(selected.analysis.confidence) * 100)}% conf</Pill>
-              ) : null}
-            </div>
-
-            {selected.tags.length ? (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {selected.tags.slice(0, 10).map((t) => (
-                  <Pill key={t} title="Tag">{t}</Pill>
-                ))}
+                  {selected ? (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <StatusPill status={selected.status} />
+                      <AnsweredPill answered={selected.answered} />
+                    </div>
+                  ) : null}
+                </div>
               </div>
-            ) : null}
-          </div>
 
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>What happened</div>
-            <div
-              style={{
-                border: "1px solid rgba(0,0,0,0.10)",
-                borderRadius: 12,
-                padding: 10,
-                fontWeight: 850,
-                color: "rgba(0,0,0,0.75)",
-                lineHeight: 1.35,
-                background: "rgba(0,0,0,0.02)",
-              }}
-            >
-              {selected.summaryReason ?? "—"}
+              <div style={{ padding: 14, display: "grid", gap: 12 }}>
+                {!selected ? (
+                  <div style={{ color: "rgba(0,0,0,0.45)", fontWeight: 900 }}>
+                    Select a job to see summary, tags, transcript and actions.
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Key</div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <Pill title="Checkout ID">{selected.checkoutId}</Pill>
+                        {selected.providerCallId ? (
+                          <Pill title="Provider call id">{selected.providerCallId.slice(0, 14)}…</Pill>
+                        ) : null}
+                        {selected.endedReason ? <Pill title="Why call ended">{selected.endedReason}</Pill> : null}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Insights</div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <DispositionPill d={selected.disposition} />
+                        <PercentPill label="Buy" value={selected.buyProbability} tone="green" />
+                        <PercentPill label="Churn" value={selected.churnProbability} tone="red" />
+                        {cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment) ? (
+                          <Pill title="Sentiment">
+                            {String(cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment)).toUpperCase()}
+                          </Pill>
+                        ) : null}
+                        {typeof selected.analysis?.confidence === "number" ? (
+                          <Pill title="Model confidence">
+                            {Math.round(clamp01(selected.analysis.confidence) * 100)}% conf
+                          </Pill>
+                        ) : null}
+                      </div>
+
+                      {selected.tags.length ? (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {selected.tags.slice(0, 10).map((t) => (
+                            <Pill key={t} title="Tag">{t}</Pill>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>What happened</div>
+                      <div
+                        style={{
+                          border: "1px solid rgba(0,0,0,0.10)",
+                          borderRadius: 12,
+                          padding: 10,
+                          fontWeight: 850,
+                          color: "rgba(0,0,0,0.75)",
+                          lineHeight: 1.35,
+                          background: "rgba(0,0,0,0.02)",
+                        }}
+                      >
+                        {selected.summaryReason ?? "—"}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>
+                        Recommended next action
+                      </div>
+                      <div
+                        style={{
+                          border: "1px solid rgba(59,130,246,0.20)",
+                          borderRadius: 12,
+                          padding: 10,
+                          fontWeight: 900,
+                          color: "rgba(30,58,138,0.90)",
+                          lineHeight: 1.35,
+                          background: "rgba(59,130,246,0.06)",
+                        }}
+                      >
+                        {selected.summaryNextAction ?? "—"}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>
+                        Suggested follow-up message
+                      </div>
+                      <div
+                        style={{
+                          border: "1px solid rgba(0,0,0,0.10)",
+                          borderRadius: 12,
+                          padding: 10,
+                          fontWeight: 850,
+                          color: "rgba(0,0,0,0.75)",
+                          lineHeight: 1.35,
+                          background: "white",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {selected.summaryText ?? "—"}
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <SoftButton
+                          type="button"
+                          onClick={() => copy(selected.summaryText ?? "")}
+                          disabled={!selected.summaryText}
+                          style={!selected.summaryText ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+                        >
+                          Copy follow-up
+                        </SoftButton>
+
+                        <SoftButton
+                          type="button"
+                          onClick={() => copy(selected.transcript ?? "")}
+                          disabled={!selected.transcript}
+                          style={!selected.transcript ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+                        >
+                          Copy transcript
+                        </SoftButton>
+
+                        {selected.recordingUrl ? (
+                          <a href={selected.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                            <SoftButton type="button" tone="primary">Open recording</SoftButton>
+                          </a>
+                        ) : (
+                          <SoftButton type="button" disabled style={{ opacity: 0.5, cursor: "not-allowed" }}>
+                            Open recording
+                          </SoftButton>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Manual</div>
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="manual_call" />
+                        <input type="hidden" name="callJobId" value={selected.id} />
+                        <button
+                          type="submit"
+                          disabled={selected.status !== "QUEUED"}
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: 10,
+                            border: "1px solid rgba(0,0,0,0.12)",
+                            background: selected.status === "QUEUED" ? "white" : "#f3f3f3",
+                            cursor: selected.status === "QUEUED" ? "pointer" : "not-allowed",
+                            fontWeight: 950,
+                            width: "100%",
+                          }}
+                        >
+                          Call now
+                        </button>
+                      </Form>
+                    </div>
+
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Raw</div>
+                      <div
+                        style={{
+                          border: "1px solid rgba(0,0,0,0.10)",
+                          borderRadius: 12,
+                          padding: 10,
+                          fontFamily:
+                            "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                          fontSize: 11,
+                          fontWeight: 800,
+                          color: "rgba(0,0,0,0.65)",
+                          background: "rgba(0,0,0,0.02)",
+                          maxHeight: 140,
+                          overflow: "auto",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {selected.analysisJson ?? selected.outcome ?? "—"}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
-
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Recommended next action</div>
-            <div
-              style={{
-                border: "1px solid rgba(59,130,246,0.20)",
-                borderRadius: 12,
-                padding: 10,
-                fontWeight: 900,
-                color: "rgba(30,58,138,0.90)",
-                lineHeight: 1.35,
-                background: "rgba(59,130,246,0.06)",
-              }}
-            >
-              {selected.summaryNextAction ?? "—"}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Suggested follow-up message</div>
-            <div
-              style={{
-                border: "1px solid rgba(0,0,0,0.10)",
-                borderRadius: 12,
-                padding: 10,
-                fontWeight: 850,
-                color: "rgba(0,0,0,0.75)",
-                lineHeight: 1.35,
-                background: "white",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {selected.summaryText ?? "—"}
-            </div>
-
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <SoftButton
-                type="button"
-                onClick={() => copy(selected.summaryText ?? "")}
-                disabled={!selected.summaryText}
-                style={!selected.summaryText ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-              >
-                Copy follow-up
-              </SoftButton>
-
-              <SoftButton
-                type="button"
-                onClick={() => copy(selected.transcript ?? "")}
-                disabled={!selected.transcript}
-                style={!selected.transcript ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-              >
-                Copy transcript
-              </SoftButton>
-
-              {selected.recordingUrl ? (
-                <a href={selected.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-                  <SoftButton type="button" tone="primary">Open recording</SoftButton>
-                </a>
-              ) : (
-                <SoftButton type="button" disabled style={{ opacity: 0.5, cursor: "not-allowed" }}>
-                  Open recording
-                </SoftButton>
-              )}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Manual</div>
-            <Form method="post">
-              <input type="hidden" name="intent" value="manual_call" />
-              <input type="hidden" name="callJobId" value={selected.id} />
-              <button
-                type="submit"
-                disabled={selected.status !== "QUEUED"}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(0,0,0,0.12)",
-                  background: selected.status === "QUEUED" ? "white" : "#f3f3f3",
-                  cursor: selected.status === "QUEUED" ? "pointer" : "not-allowed",
-                  fontWeight: 950,
-                  width: "100%",
-                }}
-              >
-                Call now
-              </button>
-            </Form>
-          </div>
-
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Raw</div>
-            <div
-              style={{
-                border: "1px solid rgba(0,0,0,0.10)",
-                borderRadius: 12,
-                padding: 10,
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                fontSize: 11,
-                fontWeight: 800,
-                color: "rgba(0,0,0,0.65)",
-                background: "rgba(0,0,0,0.02)",
-                maxHeight: 140,
-                overflow: "auto",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {selected.analysisJson ?? selected.outcome ?? "—"}
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  </div>
-</div>
-                
         </s-card>
       </s-section>
     </s-page>
