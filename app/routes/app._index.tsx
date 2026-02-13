@@ -1,50 +1,48 @@
 // app/routes/app._index.tsx
 import * as React from "react";
-import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
+import type {
+  ActionFunctionArgs,
+  HeadersFunction,
+  LoaderFunctionArgs,
+} from "react-router";
 import { Form, useLoaderData, useRevalidator, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
-import { ensureSettings, markAbandonedByDelay, syncAbandonedCheckoutsFromShopify, enqueueCallJobs } from "../callRecovery.server";
+import {
+  ensureSettings,
+  markAbandonedByDelay,
+  syncAbandonedCheckoutsFromShopify,
+  enqueueCallJobs,
+} from "../callRecovery.server";
 import { createVapiCallForJob } from "../callProvider.server";
 
 /* =========================
    Types (Prisma + Supabase)
    ========================= */
 
-/**
- * UPDATED to match the NEW vapi_call_summaries schema (based on your CSV).
- * Keep it permissive so schema additions won't break the app.
- * NOTE: Some columns may be null depending on pipeline stage.
- */
 type SupabaseCallSummary = {
   id?: string;
   shop?: string | null;
 
-  // join keys
-  call_id: string; // Vapi call id
-  call_job_id?: string | null; // Prisma CallJob.id
-  checkout_id?: string | null; // Checkout.checkoutId
+  call_id: string;
+  call_job_id?: string | null;
+  checkout_id?: string | null;
 
-  // timestamps
   received_at?: string | null;
   last_received_at?: string | null;
   ai_processed_at?: string | null;
 
-  // status
   latest_status?: string | null;
   ended_reason?: string | null;
 
-  // links
   recording_url?: string | null;
   stereo_recording_url?: string | null;
   log_url?: string | null;
 
-  // raw convo artifacts
   transcript?: string | null;
   end_of_call_report?: string | null;
 
-  // normalized outcome
   call_outcome?: string | null;
   disposition?: string | null;
 
@@ -52,25 +50,21 @@ type SupabaseCallSummary = {
   voicemail?: boolean | null;
 
   sentiment?: string | null;
-  tone?: string | null; // sometimes people name it tone
+  tone?: string | null;
   buy_probability?: number | null;
   customer_intent?: string | null;
 
-  // tags can be json array OR csv string columns
   tags?: any;
   tagcsv?: string | null;
 
-  // summaries
   summary?: string | null;
   summary_clean?: string | null;
 
-  // next action fields (newer vs older naming)
   next_best_action?: string | null;
   best_next_action?: string | null;
 
   follow_up_message?: string | null;
 
-  // arrays or text
   key_quotes?: any;
   key_quotes_text?: string | null;
 
@@ -80,7 +74,6 @@ type SupabaseCallSummary = {
   issues_to_fix?: any;
   issues_to_fix_text?: string | null;
 
-  // escalation / discount
   human_intervention?: boolean | null;
   human_intervention_reason?: string | null;
 
@@ -88,11 +81,9 @@ type SupabaseCallSummary = {
   discount_percent?: number | null;
   discount_rationale?: string | null;
 
-  // AI pipeline
   ai_status?: string | null;
   ai_error?: string | null;
 
-  // raw AI payloads
   ai_result?: any;
   ai_insights?: any;
   payload?: any;
@@ -115,16 +106,20 @@ type Row = {
   endedReason?: string | null;
   transcript?: string | null;
 
-  outcome?: string | null; // legacy / prisma
+  outcome?: string | null;
 
-  // ✅ Supabase enriched
   sb?: SupabaseCallSummary | null;
 
-  // Unified fields used by UI
   answeredFlag: "answered" | "no_answer" | "unknown";
-  disposition: "interested" | "needs_support" | "call_back_later" | "not_interested" | "wrong_number" | "unknown";
+  disposition:
+    | "interested"
+    | "needs_support"
+    | "call_back_later"
+    | "not_interested"
+    | "wrong_number"
+    | "unknown";
   sentiment: "positive" | "neutral" | "negative" | null;
-  buyProbabilityPct: number | null; // 0..100
+  buyProbabilityPct: number | null;
   tags: string[];
   summaryText: string | null;
   nextActionText: string | null;
@@ -148,7 +143,6 @@ type CheckoutUIRow = {
   currency: string;
   cartPreview: string | null;
 
-  // latest call job (Prisma)
   callJobId: string | null;
   callStatus: string | null;
   callScheduledFor: string | null;
@@ -156,7 +150,6 @@ type CheckoutUIRow = {
   providerCallId: string | null;
   recordingUrl: string | null;
 
-  // ✅ Supabase enriched
   callOutcome: string | null;
   sentiment: string | null;
   buyProbabilityPct: number | null;
@@ -210,7 +203,12 @@ function isVapiConfiguredFromEnv() {
   const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID?.trim();
   const apiKey = process.env.VAPI_API_KEY?.trim();
   const serverUrl = process.env.VAPI_SERVER_URL?.trim();
-  return Boolean(apiKey) && Boolean(assistantId) && Boolean(phoneNumberId) && Boolean(serverUrl);
+  return (
+    Boolean(apiKey) &&
+    Boolean(assistantId) &&
+    Boolean(phoneNumberId) &&
+    Boolean(serverUrl)
+  );
 }
 
 function safeStr(v: any) {
@@ -247,13 +245,20 @@ function toDisposition(v?: string | null): Row["disposition"] {
   return "unknown";
 }
 
-function toCallOutcomeTone(outcome: string | null): "green" | "amber" | "red" | "neutral" {
+function toCallOutcomeTone(
+  outcome: string | null
+): "green" | "amber" | "red" | "neutral" {
   const s = safeStr(outcome).toLowerCase();
   if (!s) return "neutral";
   if (s.includes("recovered")) return "green";
   if (s.includes("needs_followup")) return "amber";
   if (s.includes("voicemail") || s.includes("no_answer")) return "amber";
-  if (s.includes("not_recovered") || s.includes("wrong_number") || s.includes("not_interested")) return "red";
+  if (
+    s.includes("not_recovered") ||
+    s.includes("wrong_number") ||
+    s.includes("not_interested")
+  )
+    return "red";
   return "neutral";
 }
 
@@ -302,9 +307,18 @@ function parseTags(sb: SupabaseCallSummary | null | undefined): string[] {
 
 function parseTextList(v: any, fallbackText?: string | null, max = 8): string[] {
   if (Array.isArray(v)) return v.map((x) => safeStr(x)).filter(Boolean).slice(0, max);
-  if (typeof v === "string" && v.trim()) return v.split(/\r?\n|,/g).map((x) => safeStr(x)).filter(Boolean).slice(0, max);
+  if (typeof v === "string" && v.trim())
+    return v
+      .split(/\r?\n|,/g)
+      .map((x) => safeStr(x))
+      .filter(Boolean)
+      .slice(0, max);
   if (fallbackText && fallbackText.trim())
-    return fallbackText.split(/\r?\n|,/g).map((x) => safeStr(x)).filter(Boolean).slice(0, max);
+    return fallbackText
+      .split(/\r?\n|,/g)
+      .map((x) => safeStr(x))
+      .filter(Boolean)
+      .slice(0, max);
   return [];
 }
 
@@ -326,8 +340,23 @@ function pickRecordingUrl(sb: SupabaseCallSummary | null): string | null {
 }
 
 /* =========================
-   Supabase REST fetch (NEW schema)
-   ========================= */
+   Supabase REST fetch (FIXED)
+   =========================
+   Το UI σου "δείχνει τα ίδια" γιατί μέχρι τώρα το query προς PostgREST
+   ήταν εύκολο να μη φέρνει ΚΑΝΕΝΑ row (λάθος encoding/φίλτρα).
+   Εδώ είναι production-safe: URLSearchParams + σωστό or() + χωρίς διπλό encoding.
+*/
+
+function uniq(values: string[]) {
+  const s = new Set(values.map((x) => x.trim()).filter(Boolean));
+  return Array.from(s);
+}
+
+function cleanIdList(values: string[]) {
+  // Vapi call ids είναι strings τύπου "01jc..." -> δεν βάζουμε quotes, απλά τα περνάμε raw.
+  // Αφαιρούμε κόμματα/παρενθέσεις/quotes για να μην σπάει query.
+  return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
+}
 
 async function fetchSupabaseSummaries(opts: {
   shop: string;
@@ -336,19 +365,22 @@ async function fetchSupabaseSummaries(opts: {
   checkoutIds?: string[];
 }): Promise<Map<string, SupabaseCallSummary>> {
   const out = new Map<string, SupabaseCallSummary>();
+
   const url = process.env.SUPABASE_URL?.trim();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+
   if (!url || !key) return out;
 
   const shop = opts.shop;
 
-  const callIds = (opts.callIds ?? []).map((x) => x.trim()).filter(Boolean);
-  const callJobIds = (opts.callJobIds ?? []).map((x) => x.trim()).filter(Boolean);
-  const checkoutIds = (opts.checkoutIds ?? []).map((x) => x.trim()).filter(Boolean);
+  const callIds = cleanIdList(opts.callIds ?? []);
+  const callJobIds = cleanIdList(opts.callJobIds ?? []);
+  const checkoutIds = cleanIdList(opts.checkoutIds ?? []);
 
-  if (callIds.length === 0 && callJobIds.length === 0 && checkoutIds.length === 0) return out;
+  if (callIds.length === 0 && callJobIds.length === 0 && checkoutIds.length === 0) {
+    return out;
+  }
 
-  // IMPORTANT: include ALL columns you have today (and safe to ignore if null)
   const select = [
     "id",
     "shop",
@@ -399,38 +431,56 @@ async function fetchSupabaseSummaries(opts: {
     "structured_outputs",
   ].join(",");
 
-  const mkIn = (values: string[]) => values.map((x) => `"${x.replace(/"/g, "")}"`).join(",");
-
   const orParts: string[] = [];
-  if (callIds.length) orParts.push(`call_id.in.(${encodeURIComponent(mkIn(Array.from(new Set(callIds))))})`);
-  if (callJobIds.length) orParts.push(`call_job_id.in.(${encodeURIComponent(mkIn(Array.from(new Set(callJobIds))))})`);
-  if (checkoutIds.length) orParts.push(`checkout_id.in.(${encodeURIComponent(mkIn(Array.from(new Set(checkoutIds))))})`);
+  // PostgREST OR syntax: or=(col.in.(a,b),other.in.(c,d))
+  if (callIds.length) orParts.push(`call_id.in.(${callIds.join(",")})`);
+  if (callJobIds.length) orParts.push(`call_job_id.in.(${callJobIds.join(",")})`);
+  if (checkoutIds.length) orParts.push(`checkout_id.in.(${checkoutIds.join(",")})`);
 
-  const or = orParts.join(",");
-  const endpoint =
-    `${url}/rest/v1/vapi_call_summaries` +
-    `?select=${encodeURIComponent(select)}` +
-    `&shop=eq.${encodeURIComponent(shop)}` +
-    (or ? `&or=(${or})` : "");
+  const params = new URLSearchParams();
+  params.set("select", select);
 
-  const r = await fetch(endpoint, {
-    method: "GET",
-    headers: {
-      apikey: key,
-      authorization: `Bearer ${key}`,
-      "content-type": "application/json",
-    },
-  });
+  // Αν το "shop" δεν γράφεται πάντα στο Supabase, αυτό το φίλτρο σε μηδενίζει.
+  // Production fix: επιτρέπουμε και null shop.
+  // or shop.eq.<shop> OR shop.is.null
+  params.set("or", `(${orParts.join(",")})`);
 
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    console.error("[SB] fetch failed", r.status, r.statusText, body.slice(0, 800));
-    return out;
+  // shop filter: (shop = shop) OR (shop is null)
+  // PostgREST AND: βάζουμε extra filter με `and` δεν υπάρχει ως param, άρα κάνουμε 2 queries;
+  // πιο ασφαλές: απλό shop=eq.<shop> όταν ξέρεις ότι γράφεται.
+  // Εδώ κάνουμε "soft" behavior: αν δεν επιστρέψει τίποτα, ξαναδοκιμάζουμε χωρίς shop filter.
+  const withShopParams = new URLSearchParams(params);
+  withShopParams.set("shop", `eq.${shop}`);
+
+  async function doFetch(p: URLSearchParams) {
+    const endpoint = `${url}/rest/v1/vapi_call_summaries?${p.toString()}`;
+    const r = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        apikey: key,
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+    });
+
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      console.error("[SB] fetch failed", r.status, r.statusText, body.slice(0, 800));
+      return null as any;
+    }
+
+    const data = (await r.json()) as SupabaseCallSummary[];
+    return Array.isArray(data) ? data : [];
   }
 
-  const data = (await r.json()) as SupabaseCallSummary[];
+  // 1) try with shop filter
+  let data = await doFetch(withShopParams);
 
-  // Map by multiple keys for robust matching
+  // 2) fallback without shop filter (αν το shop column είναι null/κενό)
+  if (data && data.length === 0) {
+    data = await doFetch(params);
+  }
+
   for (const row of data || []) {
     if (!row) continue;
     if (row.call_id) out.set(`call:${String(row.call_id)}`, row);
@@ -445,7 +495,11 @@ async function fetchSupabaseSummaries(opts: {
    UI components
    ========================= */
 
-function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
+function Pill(props: {
+  children: any;
+  tone?: "neutral" | "green" | "blue" | "amber" | "red";
+  title?: string;
+}) {
   const tone = props.tone ?? "neutral";
   const t =
     tone === "green"
@@ -481,13 +535,29 @@ function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amb
 
 function StatusPill({ status }: { status: string }) {
   const s = safeStr(status).toUpperCase();
-  const tone = s === "COMPLETED" ? "green" : s === "CALLING" ? "blue" : s === "QUEUED" ? "amber" : s === "FAILED" ? "red" : "neutral";
+  const tone =
+    s === "COMPLETED"
+      ? "green"
+      : s === "CALLING"
+      ? "blue"
+      : s === "QUEUED"
+      ? "amber"
+      : s === "FAILED"
+      ? "red"
+      : "neutral";
   return <Pill tone={tone as any}>{s}</Pill>;
 }
 
 function CheckoutStatusPill({ status }: { status: string }) {
   const s = safeStr(status).toUpperCase();
-  const tone = s === "CONVERTED" ? "green" : s === "ABANDONED" ? "red" : s === "OPEN" ? "amber" : "neutral";
+  const tone =
+    s === "CONVERTED"
+      ? "green"
+      : s === "ABANDONED"
+      ? "red"
+      : s === "OPEN"
+      ? "amber"
+      : "neutral";
   return <Pill tone={tone as any}>{s}</Pill>;
 }
 
@@ -532,7 +602,9 @@ function AiStatusPill({ status, err }: { status: string | null; err: string | nu
   return <Pill>AI: {s.toUpperCase()}</Pill>;
 }
 
-function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "ghost" }) {
+function SoftButton(
+  props: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "ghost" }
+) {
   const tone = props.tone ?? "ghost";
   const base: React.CSSProperties = {
     padding: "8px 10px",
@@ -545,7 +617,9 @@ function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { ton
     lineHeight: 1,
   };
   const styles =
-    tone === "primary" ? { ...base, border: "1px solid rgba(59,130,246,0.30)", background: "rgba(59,130,246,0.10)" } : base;
+    tone === "primary"
+      ? { ...base, border: "1px solid rgba(59,130,246,0.30)", background: "rgba(59,130,246,0.10)" }
+      : base;
   const { tone: _tone, style, ...rest } = props as any;
   return <button {...rest} style={{ ...styles, ...(style ?? {}) }} />;
 }
@@ -581,7 +655,9 @@ function StatCard(props: { label: string; value: any; sub: string; icon?: string
           {props.icon ?? "•"}
         </div>
       </div>
-      <div style={{ marginTop: 8, fontWeight: 1000, fontSize: 22, color: "rgba(17,24,39,0.92)" }}>{props.value}</div>
+      <div style={{ marginTop: 8, fontWeight: 1000, fontSize: 22, color: "rgba(17,24,39,0.92)" }}>
+        {props.value}
+      </div>
       <div style={{ marginTop: 4, fontWeight: 850, fontSize: 12, color: "rgba(17,24,39,0.45)" }}>{props.sub}</div>
     </div>
   );
@@ -661,7 +737,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const cMap = new Map(related.map((c: any) => [c.checkoutId, c]));
 
-  // ✅ Pull Supabase summaries by ALL join keys
   const callIds = recentJobsRaw.map((j: any) => String(j.providerCallId ?? "")).filter(Boolean);
   const callJobIds = recentJobsRaw.map((j: any) => String(j.id ?? "")).filter(Boolean);
   const checkoutIds = recentJobsRaw.map((j: any) => String(j.checkoutId ?? "")).filter(Boolean);
@@ -741,11 +816,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       humanIntervention: typeof sb?.human_intervention === "boolean" ? sb.human_intervention : null,
       discountSuggest: typeof sb?.discount_suggest === "boolean" ? sb.discount_suggest : null,
       discountPercent:
-        typeof sb?.discount_percent === "number" && Number.isFinite(sb.discount_percent) ? Math.round(sb.discount_percent) : null,
+        typeof sb?.discount_percent === "number" && Number.isFinite(sb.discount_percent)
+          ? Math.round(sb.discount_percent)
+          : null,
     };
   });
 
-  // ✅ Load all checkouts + connect latest job per checkout
   const [allCheckoutsRaw, allJobsForMap] = await Promise.all([
     db.checkout.findMany({
       where: { shop },
@@ -784,7 +860,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const latestJobMap = pickLatestJobByCheckout(allJobsForMap);
 
-  // Pull summaries for checkouts table via checkout_id + providerCallId + call_job_id
   const checkoutIdsAll = allCheckoutsRaw.map((c: any) => String(c.checkoutId)).filter(Boolean);
 
   const checkoutCallIds = allCheckoutsRaw
@@ -844,9 +919,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       recordingUrl: (recordingFromSb ?? (j?.recordingUrl ? String(j.recordingUrl) : null)) ?? null,
 
       callOutcome: sb?.call_outcome ? String(sb.call_outcome) : null,
-      sentiment: sb?.sentiment ? String(sb.sentiment) : (sb?.tone ? String(sb.tone) : null),
+      sentiment: sb?.sentiment ? String(sb.sentiment) : sb?.tone ? String(sb.tone) : null,
       buyProbabilityPct:
-        typeof sb?.buy_probability === "number" && Number.isFinite(sb.buy_probability) ? Math.round(sb.buy_probability) : null,
+        typeof sb?.buy_probability === "number" && Number.isFinite(sb.buy_probability)
+          ? Math.round(sb.buy_probability)
+          : null,
       disposition: sb?.disposition ? String(sb.disposition) : null,
       aiStatus: sb?.ai_status ? String(sb.ai_status) : null,
     };
@@ -918,7 +995,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const attemptsAfter = Number(fresh?.attempts ?? 0);
 
         if (attemptsAfter >= maxAttempts) {
-          await db.callJob.update({ where: { id: job.id }, data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` } });
+          await db.callJob.update({
+            where: { id: job.id },
+            data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
+          });
         } else {
           const retryMinutes = settings.retryMinutes ?? 180;
           const next = new Date(Date.now() + retryMinutes * 60 * 1000);
@@ -954,7 +1034,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     try {
       await createVapiCallForJob({ shop, callJobId });
-      await db.callJob.updateMany({ where: { id: callJobId, shop }, data: { status: "CALLING", outcome: "VAPI_CALL_STARTED" } });
+      await db.callJob.updateMany({
+        where: { id: callJobId, shop },
+        data: { status: "CALLING", outcome: "VAPI_CALL_STARTED" },
+      });
     } catch (e: any) {
       const settings = await ensureSettings(shop);
       const maxAttempts = settings.maxAttempts ?? 2;
@@ -963,7 +1046,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const attemptsAfter = Number(fresh?.attempts ?? 0);
 
       if (attemptsAfter >= maxAttempts) {
-        await db.callJob.updateMany({ where: { id: callJobId, shop }, data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` } });
+        await db.callJob.updateMany({
+          where: { id: callJobId, shop },
+          data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
+        });
       } else {
         const retryMinutes = settings.retryMinutes ?? 180;
         const next = new Date(Date.now() + retryMinutes * 60 * 1000);
@@ -985,7 +1071,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
    ========================= */
 
 export default function Dashboard() {
-  const { shop, stats, recentJobs, currency, vapiConfigured, allCheckouts } = useLoaderData<typeof loader>();
+  const { shop, stats, recentJobs, currency, vapiConfigured, allCheckouts } =
+    useLoaderData<typeof loader>();
 
   const revalidator = useRevalidator();
   React.useEffect(() => {
@@ -1000,13 +1087,18 @@ export default function Dashboard() {
   }, [stats.callingNow, stats.queuedCalls, revalidator]);
 
   const [mode, setMode] = React.useState<"calls" | "checkouts">("calls");
-  const [selectedId, setSelectedId] = React.useState<string | null>(recentJobs?.[0]?.id ?? null);
+  const [selectedId, setSelectedId] = React.useState<string | null>(
+    recentJobs?.[0]?.id ?? null
+  );
 
   React.useEffect(() => {
     if (!selectedId && recentJobs?.[0]?.id) setSelectedId(recentJobs[0].id);
   }, [selectedId, recentJobs]);
 
-  const selected = React.useMemo(() => recentJobs.find((r) => r.id === selectedId) ?? null, [recentJobs, selectedId]);
+  const selected = React.useMemo(
+    () => recentJobs.find((r) => r.id === selectedId) ?? null,
+    [recentJobs, selectedId]
+  );
 
   const [query, setQuery] = React.useState("");
   const q = query.trim().toLowerCase();
@@ -1051,7 +1143,12 @@ export default function Dashboard() {
     }
   }, [filteredJobs, selectedId, mode]);
 
-  const money = (n: number) => new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
+  const money = (n: number) =>
+    new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(n);
 
   const copy = async (text: string) => {
     try {
@@ -1091,13 +1188,18 @@ export default function Dashboard() {
 
   const pageWrap: React.CSSProperties = { padding: 16, minWidth: 0 };
 
-  const selectedKeyQuotes = selected ? parseTextList(selected.sb?.key_quotes, selected.sb?.key_quotes_text, 6) : [];
-  const selectedObjections = selected ? parseTextList(selected.sb?.objections, selected.sb?.objections_text, 8) : [];
-  const selectedIssues = selected ? parseTextList(selected.sb?.issues_to_fix, selected.sb?.issues_to_fix_text, 8) : [];
+  const selectedKeyQuotes = selected
+    ? parseTextList(selected.sb?.key_quotes, selected.sb?.key_quotes_text, 6)
+    : [];
+  const selectedObjections = selected
+    ? parseTextList(selected.sb?.objections, selected.sb?.objections_text, 8)
+    : [];
+  const selectedIssues = selected
+    ? parseTextList(selected.sb?.issues_to_fix, selected.sb?.issues_to_fix_text, 8)
+    : [];
 
   return (
     <div style={pageWrap}>
-      {/* Header row */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
           <div style={{ fontWeight: 1100, fontSize: 18, color: "rgba(17,24,39,0.92)" }}>7-day snapshot</div>
@@ -1120,7 +1222,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* KPIs */}
       <div
         style={{
           marginTop: 12,
@@ -1137,7 +1238,6 @@ export default function Dashboard() {
         <StatCard label="Completed calls" value={stats.completedCalls7d} sub="Finished in last 7 days" icon="✓" />
       </div>
 
-      {/* Toolbar */}
       <div
         style={{
           marginTop: 14,
@@ -1211,7 +1311,6 @@ export default function Dashboard() {
       </div>
 
       {mode === "checkouts" ? (
-        /* ========================= CHECKOUTS TABLE ========================= */
         <div
           style={{
             marginTop: 12,
@@ -1302,7 +1401,6 @@ export default function Dashboard() {
           </div>
         </div>
       ) : (
-        /* ========================= CALLS VIEW ========================= */
         <div
           style={{
             marginTop: 12,
@@ -1313,7 +1411,6 @@ export default function Dashboard() {
             minWidth: 0,
           }}
         >
-          {/* Table */}
           <div
             style={{
               border: "1px solid rgba(0,0,0,0.08)",
@@ -1419,7 +1516,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Details drawer */}
           <div
             style={{
               position: isNarrow ? "relative" : "sticky",
@@ -1609,7 +1705,6 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Objections / Issues */}
                   <div style={{ display: "grid", gap: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Objections / Issues</div>
                     <div style={{ display: "grid", gap: 8 }}>
@@ -1647,7 +1742,6 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Transcript / report */}
                   <div style={{ display: "grid", gap: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Transcript / Report</div>
 
@@ -1691,7 +1785,6 @@ export default function Dashboard() {
                     ) : null}
                   </div>
 
-                  {/* Manual */}
                   <div style={{ display: "grid", gap: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Manual</div>
                     <Form method="post">
@@ -1715,7 +1808,6 @@ export default function Dashboard() {
                     </Form>
                   </div>
 
-                  {/* Raw payloads */}
                   <div style={{ display: "grid", gap: 6 }}>
                     <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>AI raw</div>
                     <div
@@ -1723,7 +1815,8 @@ export default function Dashboard() {
                         border: "1px solid rgba(0,0,0,0.10)",
                         borderRadius: 14,
                         padding: 10,
-                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                        fontFamily:
+                          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
                         fontSize: 11,
                         fontWeight: 900,
                         color: "rgba(17,24,39,0.65)",
@@ -1736,31 +1829,25 @@ export default function Dashboard() {
                       {selected.sb
                         ? JSON.stringify(
                             {
-                              // status
                               ai_status: selected.sb.ai_status,
                               ai_error: selected.sb.ai_error,
                               ai_processed_at: selected.sb.ai_processed_at,
 
-                              // join keys
                               shop: selected.sb.shop,
                               checkout_id: selected.sb.checkout_id,
                               call_job_id: selected.sb.call_job_id,
                               call_id: selected.sb.call_id,
 
-                              // timestamps
                               received_at: selected.sb.received_at,
                               last_received_at: selected.sb.last_received_at,
 
-                              // call state
                               latest_status: selected.sb.latest_status,
                               ended_reason: selected.sb.ended_reason,
 
-                              // links
                               recording_url: selected.sb.recording_url,
                               stereo_recording_url: selected.sb.stereo_recording_url,
                               log_url: selected.sb.log_url,
 
-                              // signals
                               answered: selected.sb.answered,
                               voicemail: selected.sb.voicemail,
                               sentiment: selected.sb.sentiment,
@@ -1770,14 +1857,12 @@ export default function Dashboard() {
                               disposition: selected.sb.disposition,
                               call_outcome: selected.sb.call_outcome,
 
-                              // text
                               summary: selected.sb.summary,
                               summary_clean: selected.sb.summary_clean,
                               next_best_action: selected.sb.next_best_action,
                               best_next_action: selected.sb.best_next_action,
                               follow_up_message: selected.sb.follow_up_message,
 
-                              // lists
                               tags: selected.sb.tags,
                               tagcsv: selected.sb.tagcsv,
                               key_quotes: selected.sb.key_quotes,
@@ -1787,14 +1872,12 @@ export default function Dashboard() {
                               issues_to_fix: selected.sb.issues_to_fix,
                               issues_to_fix_text: selected.sb.issues_to_fix_text,
 
-                              // escalation / discount
                               human_intervention: selected.sb.human_intervention,
                               human_intervention_reason: selected.sb.human_intervention_reason,
                               discount_suggest: selected.sb.discount_suggest,
                               discount_percent: selected.sb.discount_percent,
                               discount_rationale: selected.sb.discount_rationale,
 
-                              // payloads
                               structured_outputs: selected.sb.structured_outputs,
                               payload: selected.sb.payload,
                               ai_result: selected.sb.ai_result,
@@ -1824,4 +1907,5 @@ export function ErrorBoundary() {
   return boundary.error(useRouteError());
 }
 
-export const headers: HeadersFunction = (headersArgs) => boundary.headers(headersArgs);
+export const headers: HeadersFunction = (headersArgs) =>
+  boundary.headers(headersArgs);
