@@ -32,8 +32,8 @@ type Analysis = {
     | "not_interested"
     | "wrong_number"
     | "unknown";
-  buyProbability?: number; // 0..1
-  churnProbability?: number; // 0..1
+  buyProbability?: number;
+  churnProbability?: number;
   shortSummary?: string;
 };
 
@@ -284,7 +284,9 @@ function pickAnalysis(j: any): Analysis | null {
       buyProbability,
       churnProbability,
       shortSummary:
-        typeof obj.shortSummary === "string" ? obj.shortSummary.trim() : undefined,
+        typeof obj.shortSummary === "string"
+          ? obj.shortSummary.trim()
+          : undefined,
     };
   };
 
@@ -307,7 +309,13 @@ function pickAnalysis(j: any): Analysis | null {
     const tags = splitTags(j.tagsCsv);
     const sentiment = cleanSentiment(j.sentiment) ?? undefined;
 
-    if (!reasonPlain && !nextActionPlain && !followUpPlain && tags.length === 0 && !sentiment) {
+    if (
+      !reasonPlain &&
+      !nextActionPlain &&
+      !followUpPlain &&
+      tags.length === 0 &&
+      !sentiment
+    ) {
       return null;
     }
 
@@ -499,23 +507,51 @@ function StatusPill({ status }: { status: string }) {
 
 function AnsweredPill({ answered }: { answered: Row["answered"] }) {
   if (answered === "answered")
-    return <Pill tone="green" title="Customer picked up / engaged">Answered</Pill>;
+    return (
+      <Pill tone="green" title="Customer picked up / engaged">
+        Answered
+      </Pill>
+    );
   if (answered === "no_answer")
-    return <Pill tone="amber" title="No pick up / voicemail / busy">No answer</Pill>;
+    return (
+      <Pill tone="amber" title="No pick up / voicemail / busy">
+        No answer
+      </Pill>
+    );
   return <Pill title="Not enough signal">Unknown</Pill>;
 }
 
 function DispositionPill({ d }: { d: Row["disposition"] }) {
   if (d === "interested")
-    return <Pill tone="green" title="Positive buying intent">Interested</Pill>;
+    return (
+      <Pill tone="green" title="Positive buying intent">
+        Interested
+      </Pill>
+    );
   if (d === "needs_support")
-    return <Pill tone="blue" title="Needs help to complete order">Needs support</Pill>;
+    return (
+      <Pill tone="blue" title="Needs help to complete order">
+        Needs support
+      </Pill>
+    );
   if (d === "call_back_later")
-    return <Pill tone="amber" title="Asked to be contacted later">Call back</Pill>;
+    return (
+      <Pill tone="amber" title="Asked to be contacted later">
+        Call back
+      </Pill>
+    );
   if (d === "not_interested")
-    return <Pill tone="red" title="Explicit rejection">Not interested</Pill>;
+    return (
+      <Pill tone="red" title="Explicit rejection">
+        Not interested
+      </Pill>
+    );
   if (d === "wrong_number")
-    return <Pill tone="red" title="Wrong phone number">Wrong number</Pill>;
+    return (
+      <Pill tone="red" title="Wrong phone number">
+        Wrong number
+      </Pill>
+    );
   return <Pill title="No clear category">Unknown</Pill>;
 }
 
@@ -737,7 +773,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         if (attemptsAfter >= maxAttempts) {
           await db.callJob.update({
             where: { id: job.id },
-            data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
+            data: {
+              status: "FAILED",
+              outcome: `ERROR: ${String(e?.message ?? e)}`,
+            },
           });
         } else {
           const retryMinutes = settings.retryMinutes ?? 180;
@@ -803,7 +842,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (attemptsAfter >= maxAttempts) {
         await db.callJob.updateMany({
           where: { id: callJobId, shop },
-          data: { status: "FAILED", outcome: `ERROR: ${String(e?.message ?? e)}` },
+          data: {
+            status: "FAILED",
+            outcome: `ERROR: ${String(e?.message ?? e)}`,
+          },
         });
       } else {
         const retryMinutes = settings.retryMinutes ?? 180;
@@ -877,7 +919,6 @@ export default function Dashboard() {
     color: "rgba(0,0,0,0.78)",
   };
 
-  // responsive breakpoint for embedded iframe widths
   const [isNarrow, setIsNarrow] = React.useState(false);
 
   React.useEffect(() => {
@@ -897,33 +938,57 @@ export default function Dashboard() {
         <s-inline-grid columns={{ xs: 1, sm: 2, md: 4 }} gap="base">
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">Abandoned checkouts</s-text>
-              <s-text as="p" variant="headingLg">{stats.abandonedCount7d}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Count in last 7 days</s-text>
+              <s-text as="h3" variant="headingSm">
+                Abandoned checkouts
+              </s-text>
+              <s-text as="p" variant="headingLg">
+                {stats.abandonedCount7d}
+              </s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">
+                Count in last 7 days
+              </s-text>
             </s-stack>
           </s-card>
 
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">Potential revenue</s-text>
-              <s-text as="p" variant="headingLg">{money(stats.potentialRevenue7d)}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Sum of abandoned carts</s-text>
+              <s-text as="h3" variant="headingSm">
+                Potential revenue
+              </s-text>
+              <s-text as="p" variant="headingLg">
+                {money(stats.potentialRevenue7d)}
+              </s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">
+                Sum of abandoned carts
+              </s-text>
             </s-stack>
           </s-card>
 
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">Calls queued</s-text>
-              <s-text as="p" variant="headingLg">{stats.queuedCalls}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Ready to dial</s-text>
+              <s-text as="h3" variant="headingSm">
+                Calls queued
+              </s-text>
+              <s-text as="p" variant="headingLg">
+                {stats.queuedCalls}
+              </s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">
+                Ready to dial
+              </s-text>
             </s-stack>
           </s-card>
 
           <s-card padding="base">
             <s-stack gap="tight">
-              <s-text as="h3" variant="headingSm">Completed calls</s-text>
-              <s-text as="p" variant="headingLg">{stats.completedCalls7d}</s-text>
-              <s-text as="p" variant="bodySm" tone="subdued">Finished in last 7 days</s-text>
+              <s-text as="h3" variant="headingSm">
+                Completed calls
+              </s-text>
+              <s-text as="p" variant="headingLg">
+                {stats.completedCalls7d}
+              </s-text>
+              <s-text as="p" variant="bodySm" tone="subdued">
+                Finished in last 7 days
+              </s-text>
             </s-stack>
           </s-card>
         </s-inline-grid>
@@ -967,7 +1032,6 @@ export default function Dashboard() {
               minWidth: 0,
             }}
           >
-            {/* LEFT: TABLE */}
             <div
               style={{
                 border: "1px solid rgba(0,0,0,0.10)",
@@ -978,20 +1042,54 @@ export default function Dashboard() {
               }}
             >
               <div style={{ maxHeight: 420, overflow: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    minWidth: 980,
+                  }}
+                >
                   <thead>
                     <tr>
-                      <th style={headerCell} title="Abandoned checkout identifier">Checkout</th>
-                      <th style={headerCell} title="Customer name if available">Customer</th>
-                      <th style={headerCell} title="Top cart items preview">Cart</th>
-                      <th style={headerCell} title="Job state in the pipeline">Status</th>
-                      <th style={headerCell} title="Scheduled time (and created time in details)">Scheduled</th>
-                      <th style={headerCell} title="Times dialed / attempted">Attempts</th>
-                      <th style={headerCell} title="Did the customer engage?">Answered</th>
-                      <th style={headerCell} title="Outcome category (from AI + tags)">Disposition</th>
-                      <th style={headerCell} title="Estimated probability of purchase">Buy</th>
-                      <th style={headerCell} title="Estimated risk of losing the sale">Churn</th>
-                      <th style={headerCell} title="Recommended next step">Next action</th>
+                      <th style={headerCell} title="Abandoned checkout identifier">
+                        Checkout
+                      </th>
+                      <th style={headerCell} title="Customer name if available">
+                        Customer
+                      </th>
+                      <th style={headerCell} title="Top cart items preview">
+                        Cart
+                      </th>
+                      <th style={headerCell} title="Job state in the pipeline">
+                        Status
+                      </th>
+                      <th
+                        style={headerCell}
+                        title="Scheduled time (and created time in details)"
+                      >
+                        Scheduled
+                      </th>
+                      <th style={headerCell} title="Times dialed / attempted">
+                        Attempts
+                      </th>
+                      <th style={headerCell} title="Did the customer engage?">
+                        Answered
+                      </th>
+                      <th
+                        style={headerCell}
+                        title="Outcome category (from AI + tags)"
+                      >
+                        Disposition
+                      </th>
+                      <th style={headerCell} title="Estimated probability of purchase">
+                        Buy
+                      </th>
+                      <th style={headerCell} title="Estimated risk of losing the sale">
+                        Churn
+                      </th>
+                      <th style={headerCell} title="Recommended next step">
+                        Next action
+                      </th>
                     </tr>
                   </thead>
 
@@ -1003,12 +1101,13 @@ export default function Dashboard() {
                           key={j.id}
                           onClick={() => setSelectedId(j.id)}
                           style={{
-                            background: isSelected ? "rgba(59,130,246,0.06)" : "white",
+                            background: isSelected
+                              ? "rgba(59,130,246,0.06)"
+                              : "white",
                             cursor: "pointer",
                           }}
                         >
                           <td style={cell}>{j.checkoutId}</td>
-
                           <td style={cell}>{j.customerName ?? "-"}</td>
 
                           <td style={{ ...cell, maxWidth: 260 }}>
@@ -1028,11 +1127,20 @@ export default function Dashboard() {
                           </td>
 
                           <td style={cell}>
-                            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 8,
+                                alignItems: "center",
+                                flexWrap: "wrap",
+                              }}
+                            >
                               <StatusPill status={j.status} />
                               {cleanSentiment(j.analysis?.sentiment ?? j.sentiment) ? (
                                 <Pill title="Sentiment">
-                                  {String(cleanSentiment(j.analysis?.sentiment ?? j.sentiment)).toUpperCase()}
+                                  {String(
+                                    cleanSentiment(j.analysis?.sentiment ?? j.sentiment)
+                                  ).toUpperCase()}
                                 </Pill>
                               ) : null}
                             </div>
@@ -1040,22 +1148,34 @@ export default function Dashboard() {
 
                           <td style={cell}>
                             <div style={{ display: "grid", gap: 4 }}>
-                              <div style={{ fontWeight: 950 }}>{formatWhen(j.scheduledFor)}</div>
-                              <div style={{ fontSize: 11, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
+                              <div style={{ fontWeight: 950 }}>
+                                {formatWhen(j.scheduledFor)}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 850,
+                                  color: "rgba(0,0,0,0.45)",
+                                }}
+                              >
                                 Created {formatWhen(j.createdAt)}
                               </div>
                             </div>
                           </td>
 
                           <td style={cell}>{j.attempts}</td>
-
-                          <td style={cell}><AnsweredPill answered={j.answered} /></td>
-
-                          <td style={cell}><DispositionPill d={j.disposition} /></td>
-
-                          <td style={cell}><PercentPill label="Buy" value={j.buyProbability} tone="green" /></td>
-
-                          <td style={cell}><PercentPill label="Churn" value={j.churnProbability} tone="red" /></td>
+                          <td style={cell}>
+                            <AnsweredPill answered={j.answered} />
+                          </td>
+                          <td style={cell}>
+                            <DispositionPill d={j.disposition} />
+                          </td>
+                          <td style={cell}>
+                            <PercentPill label="Buy" value={j.buyProbability} tone="green" />
+                          </td>
+                          <td style={cell}>
+                            <PercentPill label="Churn" value={j.churnProbability} tone="red" />
+                          </td>
 
                           <td style={{ ...cell, maxWidth: 260 }}>
                             {j.summaryNextAction ? (
@@ -1073,7 +1193,14 @@ export default function Dashboard() {
                                 {j.summaryNextAction}
                               </span>
                             ) : (
-                              <span style={{ color: "rgba(0,0,0,0.35)", fontWeight: 900 }}>—</span>
+                              <span
+                                style={{
+                                  color: "rgba(0,0,0,0.35)",
+                                  fontWeight: 900,
+                                }}
+                              >
+                                —
+                              </span>
                             )}
                           </td>
                         </tr>
@@ -1084,7 +1211,6 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* RIGHT: DETAILS PANEL */}
             <div
               style={{
                 position: isNarrow ? "relative" : "sticky",
@@ -1098,19 +1224,50 @@ export default function Dashboard() {
                 justifySelf: "stretch",
               }}
             >
-              <div style={{ padding: 14, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+              <div
+                style={{
+                  padding: 14,
+                  borderBottom: "1px solid rgba(0,0,0,0.06)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    alignItems: "center",
+                  }}
+                >
                   <div style={{ display: "grid", gap: 4 }}>
-                    <div style={{ fontSize: 13, fontWeight: 950, color: "rgba(0,0,0,0.75)" }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 950,
+                        color: "rgba(0,0,0,0.75)",
+                      }}
+                    >
                       Call details
                     </div>
-                    <div style={{ fontSize: 12, fontWeight: 850, color: "rgba(0,0,0,0.45)" }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 850,
+                        color: "rgba(0,0,0,0.45)",
+                      }}
+                    >
                       {selected ? `Created ${formatWhen(selected.createdAt)}` : "Select a row"}
                     </div>
                   </div>
 
                   {selected ? (
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        justifyContent: "flex-end",
+                      }}
+                    >
                       <StatusPill status={selected.status} />
                       <AnsweredPill answered={selected.answered} />
                     </div>
@@ -1126,25 +1283,47 @@ export default function Dashboard() {
                 ) : (
                   <>
                     <div style={{ display: "grid", gap: 6 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Key</div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 950,
+                          color: "rgba(0,0,0,0.55)",
+                        }}
+                      >
+                        Key
+                      </div>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <Pill title="Checkout ID">{selected.checkoutId}</Pill>
                         {selected.providerCallId ? (
-                          <Pill title="Provider call id">{selected.providerCallId.slice(0, 14)}…</Pill>
+                          <Pill title="Provider call id">
+                            {selected.providerCallId.slice(0, 14)}…
+                          </Pill>
                         ) : null}
-                        {selected.endedReason ? <Pill title="Why call ended">{selected.endedReason}</Pill> : null}
+                        {selected.endedReason ? (
+                          <Pill title="Why call ended">{selected.endedReason}</Pill>
+                        ) : null}
                       </div>
                     </div>
 
                     <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Insights</div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 950,
+                          color: "rgba(0,0,0,0.55)",
+                        }}
+                      >
+                        Insights
+                      </div>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <DispositionPill d={selected.disposition} />
                         <PercentPill label="Buy" value={selected.buyProbability} tone="green" />
                         <PercentPill label="Churn" value={selected.churnProbability} tone="red" />
                         {cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment) ? (
                           <Pill title="Sentiment">
-                            {String(cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment)).toUpperCase()}
+                            {String(
+                              cleanSentiment(selected.analysis?.sentiment ?? selected.sentiment)
+                            ).toUpperCase()}
                           </Pill>
                         ) : null}
                         {typeof selected.analysis?.confidence === "number" ? (
@@ -1157,14 +1336,24 @@ export default function Dashboard() {
                       {selected.tags.length ? (
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                           {selected.tags.slice(0, 10).map((t) => (
-                            <Pill key={t} title="Tag">{t}</Pill>
+                            <Pill key={t} title="Tag">
+                              {t}
+                            </Pill>
                           ))}
                         </div>
                       ) : null}
                     </div>
 
                     <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>What happened</div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 950,
+                          color: "rgba(0,0,0,0.55)",
+                        }}
+                      >
+                        What happened
+                      </div>
                       <div
                         style={{
                           border: "1px solid rgba(0,0,0,0.10)",
@@ -1181,7 +1370,13 @@ export default function Dashboard() {
                     </div>
 
                     <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 950,
+                          color: "rgba(0,0,0,0.55)",
+                        }}
+                      >
                         Recommended next action
                       </div>
                       <div
@@ -1200,7 +1395,13 @@ export default function Dashboard() {
                     </div>
 
                     <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 950,
+                          color: "rgba(0,0,0,0.55)",
+                        }}
+                      >
                         Suggested follow-up message
                       </div>
                       <div
@@ -1223,7 +1424,11 @@ export default function Dashboard() {
                           type="button"
                           onClick={() => copy(selected.summaryText ?? "")}
                           disabled={!selected.summaryText}
-                          style={!selected.summaryText ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+                          style={
+                            !selected.summaryText
+                              ? { opacity: 0.5, cursor: "not-allowed" }
+                              : undefined
+                          }
                         >
                           Copy follow-up
                         </SoftButton>
@@ -1232,17 +1437,32 @@ export default function Dashboard() {
                           type="button"
                           onClick={() => copy(selected.transcript ?? "")}
                           disabled={!selected.transcript}
-                          style={!selected.transcript ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+                          style={
+                            !selected.transcript
+                              ? { opacity: 0.5, cursor: "not-allowed" }
+                              : undefined
+                          }
                         >
                           Copy transcript
                         </SoftButton>
 
                         {selected.recordingUrl ? (
-                          <a href={selected.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-                            <SoftButton type="button" tone="primary">Open recording</SoftButton>
+                          <a
+                            href={selected.recordingUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ textDecoration: "none" }}
+                          >
+                            <SoftButton type="button" tone="primary">
+                              Open recording
+                            </SoftButton>
                           </a>
                         ) : (
-                          <SoftButton type="button" disabled style={{ opacity: 0.5, cursor: "not-allowed" }}>
+                          <SoftButton
+                            type="button"
+                            disabled
+                            style={{ opacity: 0.5, cursor: "not-allowed" }}
+                          >
                             Open recording
                           </SoftButton>
                         )}
@@ -1250,7 +1470,15 @@ export default function Dashboard() {
                     </div>
 
                     <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Manual</div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 950,
+                          color: "rgba(0,0,0,0.55)",
+                        }}
+                      >
+                        Manual
+                      </div>
                       <Form method="post">
                         <input type="hidden" name="intent" value="manual_call" />
                         <input type="hidden" name="callJobId" value={selected.id} />
@@ -1273,7 +1501,15 @@ export default function Dashboard() {
                     </div>
 
                     <div style={{ display: "grid", gap: 6 }}>
-                      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(0,0,0,0.55)" }}>Raw</div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 950,
+                          color: "rgba(0,0,0,0.55)",
+                        }}
+                      >
+                        Raw
+                      </div>
                       <div
                         style={{
                           border: "1px solid rgba(0,0,0,0.10)",
