@@ -321,7 +321,8 @@ function parseTags(sb: SupabaseCallSummary | null | undefined): string[] {
 }
 
 function parseTextList(v: any, fallbackText?: string | null, max = 8): string[] {
-  if (Array.isArray(v)) return v.map((x) => safeStr(x)).filter(Boolean).slice(0, max);
+  if (Array.isArray(v))
+    return v.map((x) => safeStr(x)).filter(Boolean).slice(0, max);
   if (typeof v === "string" && v.trim())
     return v
       .split(/\r?\n|,/g)
@@ -490,7 +491,7 @@ async function fetchSupabaseSummaries(opts: {
 }
 
 /* =========================
-   UI components
+   UI primitives
    ========================= */
 
 function Pill(props: {
@@ -531,82 +532,185 @@ function Pill(props: {
   );
 }
 
-function StatusPill({ status }: { status: string }) {
-  const s = safeStr(status).toUpperCase();
-  const tone =
-    s === "COMPLETED"
-      ? "green"
-      : s === "CALLING"
-      ? "blue"
-      : s === "QUEUED"
-      ? "amber"
-      : s === "FAILED"
-      ? "red"
-      : "neutral";
-  return <Pill tone={tone as any}>{s}</Pill>;
-}
-
-function AnsweredPill({ answered }: { answered: Row["answeredFlag"] }) {
-  if (answered === "answered") return <Pill tone="green" title="Customer engaged">Answered</Pill>;
-  if (answered === "no_answer") return <Pill tone="amber" title="No pick up / voicemail / busy">No answer</Pill>;
-  return <Pill title="Not enough signal">Unknown</Pill>;
-}
-
-function DispositionPill({ d }: { d: Row["disposition"] }) {
-  if (d === "interested") return <Pill tone="green" title="Positive buying intent">Interested</Pill>;
-  if (d === "needs_support") return <Pill tone="blue" title="Needs help to complete order">Needs support</Pill>;
-  if (d === "call_back_later") return <Pill tone="amber" title="Asked to be contacted later">Call back</Pill>;
-  if (d === "not_interested") return <Pill tone="red" title="Explicit rejection">Not interested</Pill>;
-  if (d === "wrong_number") return <Pill tone="red" title="Wrong phone number">Wrong number</Pill>;
-  return <Pill title="No clear category">Unknown</Pill>;
-}
-
-function BuyPill({ pct }: { pct: number | null }) {
-  if (pct == null) return <Pill title="Not available">—</Pill>;
-  const tone = pct >= 70 ? "green" : pct >= 40 ? "amber" : "red";
-  return (
-    <Pill tone={tone as any} title={`Buy probability ${pct}%`}>
-      {pct}%
-    </Pill>
-  );
-}
-
-function OutcomePill({ outcome }: { outcome: string | null }) {
-  const s = safeStr(outcome);
-  if (!s) return <Pill>—</Pill>;
-  return <Pill tone={toCallOutcomeTone(s)} title="AI outcome">{s.toUpperCase()}</Pill>;
-}
-
-function AiStatusPill({ status, err }: { status: string | null; err: string | null }) {
-  const s = safeStr(status).toLowerCase();
-  if (!s) return <Pill>AI: —</Pill>;
-  if (s === "done") return <Pill tone="green">AI: DONE</Pill>;
-  if (s === "processing") return <Pill tone="blue">AI: RUNNING</Pill>;
-  if (s === "pending") return <Pill tone="amber">AI: PENDING</Pill>;
-  if (s === "error") return <Pill tone="red" title={err ?? ""}>AI: ERROR</Pill>;
-  return <Pill>AI: {s.toUpperCase()}</Pill>;
-}
-
 function SoftButton(
-  props: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "ghost" }
+  props: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    tone?: "primary" | "ghost" | "dark";
+  }
 ) {
   const tone = props.tone ?? "ghost";
   const base: React.CSSProperties = {
-    padding: "8px 10px",
-    borderRadius: 12,
-    border: "1px solid rgba(0,0,0,0.10)",
-    background: "white",
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(255,255,255,0.10)",
     cursor: "pointer",
     fontWeight: 950,
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 1,
+    color: "rgba(255,255,255,0.92)",
+    backdropFilter: "blur(6px)",
   };
+
   const styles =
     tone === "primary"
-      ? { ...base, border: "1px solid rgba(59,130,246,0.30)", background: "rgba(59,130,246,0.10)" }
+      ? {
+          ...base,
+          background: "rgba(59,130,246,0.92)",
+          border: "1px solid rgba(59,130,246,0.35)",
+        }
+      : tone === "dark"
+      ? {
+          ...base,
+          background: "rgba(0,0,0,0.35)",
+          border: "1px solid rgba(255,255,255,0.12)",
+        }
       : base;
+
   const { tone: _tone, style, ...rest } = props as any;
   return <button {...rest} style={{ ...styles, ...(style ?? {}) }} />;
+}
+
+function SmallStatusDot({ tone }: { tone: "green" | "blue" | "amber" | "red" | "neutral" }) {
+  const c =
+    tone === "green"
+      ? "rgba(16,185,129,1)"
+      : tone === "blue"
+      ? "rgba(59,130,246,1)"
+      : tone === "amber"
+      ? "rgba(245,158,11,1)"
+      : tone === "red"
+      ? "rgba(239,68,68,1)"
+      : "rgba(156,163,175,1)";
+  return (
+    <span
+      style={{
+        width: 10,
+        height: 10,
+        borderRadius: 999,
+        background: c,
+        boxShadow: "0 0 0 3px rgba(255,255,255,0.08)",
+        display: "inline-block",
+      }}
+    />
+  );
+}
+
+function statusToneFromJobStatus(status: string): "green" | "blue" | "amber" | "red" | "neutral" {
+  const s = safeStr(status).toUpperCase();
+  if (s === "COMPLETED") return "green";
+  if (s === "CALLING") return "blue";
+  if (s === "QUEUED") return "amber";
+  if (s === "FAILED") return "red";
+  return "neutral";
+}
+
+function SummaryCard(props: {
+  title: string;
+  value: string;
+  subtitle?: string;
+  accent?: "green" | "blue" | "amber" | "red" | "neutral";
+}) {
+  const a = props.accent ?? "neutral";
+  const border =
+    a === "green"
+      ? "rgba(16,185,129,0.30)"
+      : a === "blue"
+      ? "rgba(59,130,246,0.30)"
+      : a === "amber"
+      ? "rgba(245,158,11,0.30)"
+      : a === "red"
+      ? "rgba(239,68,68,0.30)"
+      : "rgba(0,0,0,0.12)";
+
+  const bar =
+    a === "green"
+      ? "rgba(16,185,129,0.90)"
+      : a === "blue"
+      ? "rgba(59,130,246,0.90)"
+      : a === "amber"
+      ? "rgba(245,158,11,0.90)"
+      : a === "red"
+      ? "rgba(239,68,68,0.90)"
+      : "rgba(17,24,39,0.30)";
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${border}`,
+        background: "white",
+        borderRadius: 12,
+        overflow: "hidden",
+        minWidth: 0,
+        boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
+      }}
+    >
+      <div style={{ padding: 12, display: "grid", gap: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(17,24,39,0.55)" }}>
+          {props.title}
+        </div>
+        <div style={{ fontSize: 26, fontWeight: 1150, color: "rgba(17,24,39,0.92)" }}>
+          {props.value}
+        </div>
+        {props.subtitle ? (
+          <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(17,24,39,0.45)" }}>
+            {props.subtitle}
+          </div>
+        ) : null}
+      </div>
+      <div style={{ height: 6, background: "rgba(0,0,0,0.04)" }}>
+        <div style={{ height: 6, width: "55%", background: bar }} />
+      </div>
+    </div>
+  );
+}
+
+function PipelineBar(props: {
+  abandoned: number;
+  eligible: number;
+  queued: number;
+  calling: number;
+  recovered: number;
+}) {
+  const items = [
+    { k: "Abandoned", v: props.abandoned, bg: "rgba(249,115,22,0.92)" },
+    { k: "Eligible", v: props.eligible, bg: "rgba(34,197,94,0.92)" },
+    { k: "Queued", v: props.queued, bg: "rgba(59,130,246,0.92)" },
+    { k: "Calling", v: props.calling, bg: "rgba(14,165,233,0.92)" },
+    { k: "Recovered", v: props.recovered, bg: "rgba(16,185,129,0.92)" },
+  ];
+
+  return (
+    <div
+      style={{
+        border: "1px solid rgba(0,0,0,0.10)",
+        borderRadius: 12,
+        overflow: "hidden",
+        background: "white",
+        boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
+      }}
+    >
+      <div style={{ padding: 12, fontSize: 13, fontWeight: 1100, color: "rgba(17,24,39,0.85)" }}>
+        Recovery Pipeline
+      </div>
+      <div style={{ display: "flex", width: "100%" }}>
+        {items.map((it) => (
+          <div
+            key={it.k}
+            style={{
+              flex: 1,
+              background: it.bg,
+              padding: "12px 12px",
+              color: "rgba(255,255,255,0.95)",
+              minWidth: 0,
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 950, opacity: 0.92 }}>{it.k}</div>
+            <div style={{ marginTop: 2, fontSize: 16, fontWeight: 1150 }}>{it.v}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /* =========================
@@ -648,7 +752,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     db.checkout.count({ where: { shop, status: "ABANDONED", abandonedAt: { gte: since } } }),
     db.checkout.count({ where: { shop, status: "CONVERTED", updatedAt: { gte: since } } }),
     db.checkout.count({ where: { shop, status: "OPEN", createdAt: { gte: since } } }),
-    db.checkout.aggregate({ where: { shop, status: "ABANDONED", abandonedAt: { gte: since } }, _sum: { value: true } }),
+    db.checkout.aggregate({
+      where: { shop, status: "ABANDONED", abandonedAt: { gte: since } },
+      _sum: { value: true },
+    }),
     db.callJob.count({ where: { shop, status: "QUEUED" } }),
     db.callJob.count({ where: { shop, status: "CALLING" } }),
     db.callJob.count({ where: { shop, status: "COMPLETED", createdAt: { gte: since } } }),
@@ -729,7 +836,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const callOutcome = sb?.call_outcome ? String(sb.call_outcome) : null;
 
     const recordingFromSb = pickRecordingUrl(sb);
-    const isRecovered = isRecoveredFromOutcome(callOutcome) || safeStr(j.outcome).toLowerCase().includes("recovered");
+    const isRecovered =
+      isRecoveredFromOutcome(callOutcome) || safeStr(j.outcome).toLowerCase().includes("recovered");
 
     return {
       id: String(j.id),
@@ -1061,77 +1169,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 /* =========================
-   UI
+   UI (single layout, no inner sidebar)
    ========================= */
-
-type NavKey = "dashboard" | "insights" | "jobs" | "settings";
-
-function NavItem(props: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={props.onClick}
-      style={{
-        width: "100%",
-        textAlign: "left",
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: "1px solid rgba(0,0,0,0.06)",
-        background: props.active ? "rgba(59,130,246,0.10)" : "transparent",
-        cursor: "pointer",
-        fontWeight: 950,
-        fontSize: 13,
-        color: props.active ? "rgba(30,58,138,0.95)" : "rgba(17,24,39,0.72)",
-      }}
-    >
-      {props.label}
-    </button>
-  );
-}
-
-function Kpi(props: { label: string; value: string; tone?: "green" | "blue" | "amber" | "red" | "neutral" }) {
-  const tone = props.tone ?? "neutral";
-  const border =
-    tone === "green"
-      ? "rgba(16,185,129,0.25)"
-      : tone === "blue"
-      ? "rgba(59,130,246,0.25)"
-      : tone === "amber"
-      ? "rgba(245,158,11,0.25)"
-      : tone === "red"
-      ? "rgba(239,68,68,0.25)"
-      : "rgba(0,0,0,0.10)";
-  const bg =
-    tone === "green"
-      ? "rgba(16,185,129,0.06)"
-      : tone === "blue"
-      ? "rgba(59,130,246,0.06)"
-      : tone === "amber"
-      ? "rgba(245,158,11,0.06)"
-      : tone === "red"
-      ? "rgba(239,68,68,0.06)"
-      : "rgba(0,0,0,0.02)";
-  return (
-    <div
-      style={{
-        border: `1px solid ${border}`,
-        background: bg,
-        borderRadius: 14,
-        padding: 10,
-        minWidth: 0,
-      }}
-    >
-      <div style={{ fontSize: 12, fontWeight: 950, color: "rgba(17,24,39,0.55)" }}>{props.label}</div>
-      <div style={{ marginTop: 6, fontSize: 18, fontWeight: 1100, color: "rgba(17,24,39,0.92)" }}>
-        {props.value}
-      </div>
-    </div>
-  );
-}
 
 export default function Dashboard() {
   const { shop, stats, recentJobs, currency, vapiConfigured } =
@@ -1150,25 +1189,17 @@ export default function Dashboard() {
     return () => window.clearInterval(id);
   }, [stats.callingNow, stats.queuedCalls, revalidator]);
 
-  const [nav, setNav] = React.useState<NavKey>("dashboard");
-
-  const [selectedId, setSelectedId] = React.useState<string | null>(
-    recentJobs?.[0]?.id ?? null
-  );
-
-  React.useEffect(() => {
-    if (!selectedId && recentJobs?.[0]?.id) setSelectedId(recentJobs[0].id);
-  }, [selectedId, recentJobs]);
-
-  const selected = React.useMemo(
-    () => recentJobs.find((r) => r.id === selectedId) ?? null,
-    [recentJobs, selectedId]
-  );
+  const money = (n: number) =>
+    new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(n);
 
   const [query, setQuery] = React.useState("");
   const q = query.trim().toLowerCase();
 
-  const filteredJobs = React.useMemo(() => {
+  const filtered = React.useMemo(() => {
     if (!q) return recentJobs;
     return recentJobs.filter((r) => {
       return (
@@ -1177,46 +1208,81 @@ export default function Dashboard() {
         safeStr(r.cartPreview).toLowerCase().includes(q) ||
         safeStr(r.status).toLowerCase().includes(q) ||
         safeStr(r.callOutcome).toLowerCase().includes(q) ||
-        safeStr(r.nextActionText).toLowerCase().includes(q) ||
         safeStr(r.summaryText).toLowerCase().includes(q) ||
+        safeStr(r.nextActionText).toLowerCase().includes(q) ||
         r.tags.some((t) => safeStr(t).toLowerCase().includes(q))
       );
     });
   }, [recentJobs, q]);
 
-  React.useEffect(() => {
-    if (!filteredJobs.find((r) => r.id === selectedId)) {
-      setSelectedId(filteredJobs?.[0]?.id ?? null);
+  const topReasons = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of recentJobs) {
+      for (const t of (r.tags || []).slice(0, 12)) {
+        const key = safeStr(t).trim();
+        if (!key) continue;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
     }
-  }, [filteredJobs, selectedId]);
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6);
+  }, [recentJobs]);
 
-  const money = (n: number) =>
-    new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency,
-      maximumFractionDigits: 2,
-    }).format(n);
+  const liveActivity = React.useMemo(() => {
+    return recentJobs.slice(0, 6);
+  }, [recentJobs]);
 
-  const copy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {}
+  const headerWrap: React.CSSProperties = {
+    borderRadius: 14,
+    overflow: "hidden",
+    border: "1px solid rgba(0,0,0,0.12)",
+    boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
+    background:
+      "linear-gradient(180deg, rgba(15,23,42,0.96), rgba(2,6,23,0.96))",
   };
 
-  const headerCell: React.CSSProperties = {
+  const page: React.CSSProperties = {
+    padding: 14,
+    minWidth: 0,
+  };
+
+  const gridTop: React.CSSProperties = {
+    marginTop: 12,
+    display: "grid",
+    gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
+    gap: 12,
+  };
+
+  const sectionTitle: React.CSSProperties = {
+    fontSize: 13,
+    fontWeight: 1150,
+    color: "rgba(17,24,39,0.88)",
+  };
+
+  const card: React.CSSProperties = {
+    border: "1px solid rgba(0,0,0,0.10)",
+    borderRadius: 12,
+    background: "white",
+    boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
+    overflow: "hidden",
+    minWidth: 0,
+  };
+
+  const tableHead: React.CSSProperties = {
     position: "sticky",
     top: 0,
-    background: "white",
     zIndex: 1,
-    borderBottom: "1px solid rgba(0,0,0,0.08)",
+    background: "white",
+    borderBottom: "1px solid rgba(0,0,0,0.10)",
     padding: "10px 10px",
     fontSize: 12,
-    fontWeight: 1000,
+    fontWeight: 1100,
     color: "rgba(17,24,39,0.55)",
     whiteSpace: "nowrap",
   };
 
-  const cell: React.CSSProperties = {
+  const td: React.CSSProperties = {
     padding: "10px 10px",
     borderBottom: "1px solid rgba(0,0,0,0.06)",
     verticalAlign: "top",
@@ -1225,800 +1291,534 @@ export default function Dashboard() {
     color: "rgba(17,24,39,0.78)",
   };
 
-  const [isNarrow, setIsNarrow] = React.useState(false);
-  React.useEffect(() => {
-    const onResize = () => setIsNarrow(window.innerWidth < 1180);
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  const selectedKeyQuotes = selected
-    ? parseTextList(selected.sb?.key_quotes, selected.sb?.key_quotes_text, 6)
-    : [];
-  const selectedObjections = selected
-    ? parseTextList(selected.sb?.objections, selected.sb?.objections_text, 8)
-    : [];
-  const selectedIssues = selected
-    ? parseTextList(selected.sb?.issues_to_fix, selected.sb?.issues_to_fix_text, 8)
-    : [];
-
-  const recoveredRowStyle: React.CSSProperties = {
-    background:
-      "linear-gradient(90deg, rgba(16,185,129,0.14), rgba(16,185,129,0.03) 55%, rgba(255,255,255,1) 100%)",
-  };
-
-  const shell: React.CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "260px minmax(0, 1fr)",
-    gap: 14,
-    padding: 16,
-    minWidth: 0,
-  };
-
-  const sidebar: React.CSSProperties = {
-    border: "1px solid rgba(0,0,0,0.08)",
-    background: "white",
-    borderRadius: 16,
-    padding: 12,
-    boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
-    minWidth: 0,
-    height: "fit-content",
-  };
-
-  const main: React.CSSProperties = {
-    minWidth: 0,
-  };
-
-  const topHeader: React.CSSProperties = {
-    border: "1px solid rgba(0,0,0,0.08)",
-    background: "white",
-    borderRadius: 16,
-    padding: 12,
-    boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
-    minWidth: 0,
-  };
-
-  const listAndDetailWrap: React.CSSProperties = {
-    marginTop: 12,
-    display: "grid",
-    gridTemplateColumns: isNarrow ? "1fr" : "minmax(0, 1fr) 420px",
-    gap: 12,
-    alignItems: "start",
-    minWidth: 0,
-  };
+  const isNarrow = typeof window !== "undefined" ? window.innerWidth < 1100 : false;
 
   return (
-    <div style={shell}>
-      <div style={sidebar}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 6px 10px 6px" }}>
-          <div
-            style={{
-              width: 34,
-              height: 34,
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.08)",
-              background: "rgba(59,130,246,0.06)",
-              display: "grid",
-              placeItems: "center",
-              fontWeight: 1100,
-              color: "rgba(30,58,138,0.92)",
-            }}
-          >
-            AI
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 1100, fontSize: 13, color: "rgba(17,24,39,0.92)" }}>
-              AI Checkout Call Recovery
+    <div style={page}>
+      <div style={headerWrap}>
+        <div
+          style={{
+            padding: 14,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <div
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: 9,
+                background: "rgba(34,197,94,0.18)",
+                border: "1px solid rgba(34,197,94,0.25)",
+                display: "grid",
+                placeItems: "center",
+                fontWeight: 1150,
+                color: "rgba(255,255,255,0.90)",
+              }}
+              title="Shopify embedded app"
+            >
+              S
             </div>
-            <div style={{ fontWeight: 900, fontSize: 12, color: "rgba(17,24,39,0.45)" }}>
-              Embedded Shopify app
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 18,
+                  fontWeight: 1200,
+                  color: "rgba(255,255,255,0.92)",
+                  letterSpacing: -0.2,
+                }}
+              >
+                Checkout Recovery Dashboard
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.55)" }}>
+                {shop} • {vapiConfigured ? "Vapi enabled" : "Sim mode"} • Live refresh {stats.callingNow > 0 || stats.queuedCalls > 0 ? "ON" : "OFF"}
+              </div>
             </div>
           </div>
-        </div>
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <NavItem active={nav === "dashboard"} label="Dashboard" onClick={() => setNav("dashboard")} />
-          <NavItem active={nav === "insights"} label="Call Insights" onClick={() => setNav("insights")} />
-          <NavItem active={nav === "jobs"} label="Call Jobs" onClick={() => setNav("jobs")} />
-          <NavItem active={nav === "settings"} label="Settings" onClick={() => setNav("settings")} />
-        </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <SoftButton
+              tone="dark"
+              type="button"
+              onClick={() => revalidator.revalidate()}
+              title="Sync now"
+            >
+              Sync now
+            </SoftButton>
 
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,0.06)" }}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Pill title="Shop">{shop}</Pill>
-            <Pill title="Provider">{vapiConfigured ? "Vapi ready" : "Sim mode"}</Pill>
-          </div>
-        </div>
+            <Form method="post">
+              <input type="hidden" name="intent" value="run_jobs" />
+              <SoftButton tone="primary" type="submit" title="Create test call (runs queued jobs)">
+                Create Test Call
+              </SoftButton>
+            </Form>
 
-        <div style={{ marginTop: 12 }}>
-          <div
-            style={{
-              border: "1px solid rgba(0,0,0,0.08)",
-              background: "rgba(0,0,0,0.02)",
-              borderRadius: 14,
-              padding: 10,
-              display: "grid",
-              gap: 8,
-            }}
-          >
-            <Kpi label="Calls queued" value={String(stats.queuedCalls)} tone={stats.queuedCalls > 0 ? "amber" : "neutral"} />
-            <Kpi label="Calling now" value={String(stats.callingNow)} tone={stats.callingNow > 0 ? "blue" : "neutral"} />
-            <Kpi label="Completed (7d)" value={String(stats.completedCalls7d)} tone="green" />
+            <SoftButton tone="dark" type="button" title="Menu" onClick={() => {}}>
+              ⋯
+            </SoftButton>
           </div>
         </div>
       </div>
 
-      <div style={main}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 4px 10px 4px" }}>
-          <div style={{ fontWeight: 1100, fontSize: 16, color: "rgba(17,24,39,0.92)" }}>
-            {nav === "dashboard" ? "Dashboard" : nav === "insights" ? "Call Insights" : nav === "jobs" ? "Call Jobs" : "Settings"}
-          </div>
-          <Pill title="Mode">Live</Pill>
-        </div>
+      <div style={gridTop}>
+        <SummaryCard
+          title="Recovered Revenue"
+          value={money(stats.potentialRevenue7d)}
+          subtitle="/7d potential"
+          accent="green"
+        />
+        <SummaryCard
+          title="Recovered Checkouts"
+          value={String(stats.convertedCount7d)}
+          subtitle="/7d"
+          accent="green"
+        />
+        <SummaryCard
+          title="Calls in Progress"
+          value={`${stats.callingNow}`}
+          subtitle={stats.callingNow > 0 ? "Live" : "Idle"}
+          accent="blue"
+        />
+        <SummaryCard
+          title="Queued Calls"
+          value={`${stats.queuedCalls}`}
+          subtitle="Ready to dial"
+          accent={stats.queuedCalls > 0 ? "amber" : "neutral"}
+        />
+        <SummaryCard
+          title="Answer Rate"
+          value={
+            (() => {
+              const answered = recentJobs.filter((r) => r.answeredFlag === "answered").length;
+              const known = recentJobs.filter((r) => r.answeredFlag !== "unknown").length;
+              if (known === 0) return "—";
+              const pct = Math.round((answered / known) * 100);
+              return `${pct}%`;
+            })()
+          }
+          subtitle="From recent calls"
+          accent="blue"
+        />
+        <SummaryCard
+          title="Avg Attempts"
+          value={
+            (() => {
+              if (recentJobs.length === 0) return "—";
+              const avg = recentJobs.reduce((a, r) => a + Number(r.attempts ?? 0), 0) / recentJobs.length;
+              return `${avg.toFixed(1)}`;
+            })()
+          }
+          subtitle="Recent jobs"
+          accent="neutral"
+        />
+      </div>
 
-        {nav === "insights" ? (
+      <div style={{ marginTop: 12 }}>
+        <PipelineBar
+          abandoned={stats.abandonedCount7d}
+          eligible={stats.abandonedCount7d}
+          queued={stats.queuedCalls}
+          calling={stats.callingNow}
+          recovered={stats.convertedCount7d}
+        />
+      </div>
+
+      <div
+        style={{
+          marginTop: 12,
+          display: "grid",
+          gridTemplateColumns: isNarrow ? "1fr" : "minmax(0, 1fr) 360px",
+          gap: 12,
+          alignItems: "start",
+        }}
+      >
+        <div style={card}>
           <div
             style={{
-              border: "1px solid rgba(0,0,0,0.08)",
-              background: "white",
-              borderRadius: 16,
-              padding: 14,
-              boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
+              padding: 12,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              flexWrap: "wrap",
+              borderBottom: "1px solid rgba(0,0,0,0.08)",
             }}
           >
-            <div style={{ display: "grid", gridTemplateColumns: isNarrow ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 12 }}>
-              <Kpi label="Open (7d)" value={String(stats.openCount7d)} />
-              <Kpi label="Abandoned (7d)" value={String(stats.abandonedCount7d)} tone="red" />
-              <Kpi label="Recovered (7d)" value={String(stats.convertedCount7d)} tone="green" />
-              <Kpi label="Potential revenue (7d)" value={money(stats.potentialRevenue7d)} tone="amber" />
-              <Kpi label="Calls queued" value={String(stats.queuedCalls)} tone={stats.queuedCalls > 0 ? "amber" : "neutral"} />
-              <Kpi label="Calling now" value={String(stats.callingNow)} tone={stats.callingNow > 0 ? "blue" : "neutral"} />
-            </div>
-          </div>
-        ) : nav === "settings" ? (
-          <div
-            style={{
-              border: "1px solid rgba(0,0,0,0.08)",
-              background: "white",
-              borderRadius: 16,
-              padding: 14,
-              boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
-              display: "grid",
-              gap: 12,
-            }}
-          >
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Pill title="Provider">{vapiConfigured ? "Vapi ready" : "Sim mode"}</Pill>
-              <Pill title="Refresh">{stats.callingNow > 0 || stats.queuedCalls > 0 ? "Auto refresh 5s" : "Idle"}</Pill>
-            </div>
-            <div style={{ color: "rgba(17,24,39,0.72)", fontWeight: 900, lineHeight: 1.4 }}>
-              Environment status is derived from VAPI_API_KEY, VAPI_ASSISTANT_ID, VAPI_PHONE_NUMBER_ID, VAPI_SERVER_URL.
-            </div>
-          </div>
-        ) : (
-          <>
-            <div style={topHeader}>
+            <div style={sectionTitle}>Recent Calls</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  flexWrap: "wrap",
+                  gap: 8,
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  background: "rgba(0,0,0,0.02)",
+                  borderRadius: 10,
+                  padding: "8px 10px",
+                  minWidth: 260,
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                  <Form method="post">
-                    <input type="hidden" name="intent" value="run_jobs" />
-                    <SoftButton type="submit" tone="primary" style={{ padding: "10px 12px" }}>
-                      Run queued jobs →
-                    </SoftButton>
-                  </Form>
+                <span style={{ fontWeight: 1100, color: "rgba(17,24,39,0.45)" }}>⌕</span>
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search…"
+                  style={{
+                    border: "none",
+                    outline: "none",
+                    background: "transparent",
+                    width: "100%",
+                    fontWeight: 900,
+                    color: "rgba(17,24,39,0.85)",
+                  }}
+                />
+              </div>
 
-                  <Pill title="Auto dial status">{vapiConfigured ? "Auto dial enabled" : "Auto dial disabled"}</Pill>
+              <Pill title="Rows">{filtered.length}</Pill>
 
-                  <SoftButton
-                    type="button"
-                    onClick={() => revalidator.revalidate()}
-                    style={{ padding: "10px 12px" }}
-                    title="Force refresh now"
-                  >
-                    Refresh
-                  </SoftButton>
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                disabled={!query}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  background: "white",
+                  cursor: query ? "pointer" : "not-allowed",
+                  fontWeight: 950,
+                  fontSize: 12,
+                  opacity: query ? 1 : 0.55,
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
 
-                  <SoftButton
-                    type="button"
-                    onClick={() => setQuery("")}
-                    disabled={!query}
-                    style={!query ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-                  >
-                    Clear
-                  </SoftButton>
-                </div>
+          <div style={{ maxHeight: 520, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+              <thead>
+                <tr>
+                  <th style={tableHead}>Checkout</th>
+                  <th style={tableHead}>Customer</th>
+                  <th style={tableHead}>Cart</th>
+                  <th style={tableHead}>Status</th>
+                  <th style={tableHead}>Outcome</th>
+                  <th style={tableHead}>Buy</th>
+                  <th style={tableHead}>Scheduled</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r) => {
+                  const statusTone = statusToneFromJobStatus(r.status);
+                  const outcomeTone = toCallOutcomeTone(r.callOutcome);
+                  return (
+                    <tr
+                      key={r.id}
+                      style={{
+                        background: r.isRecovered
+                          ? "linear-gradient(90deg, rgba(16,185,129,0.12), rgba(16,185,129,0.02) 60%, rgba(255,255,255,1) 100%)"
+                          : "white",
+                      }}
+                    >
+                      <td style={{ ...td, color: "rgba(30,58,138,0.95)" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 1150 }}>{r.checkoutId}</span>
+                          {r.isRecovered ? <Pill tone="green">RECOVERED</Pill> : null}
+                        </div>
+                      </td>
 
-                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <td style={td}>
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div style={{ fontWeight: 1150 }}>{r.customerName ?? "-"}</div>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <Pill tone={r.answeredFlag === "answered" ? "green" : r.answeredFlag === "no_answer" ? "amber" : "neutral"}>
+                              {r.answeredFlag === "answered" ? "Answered" : r.answeredFlag === "no_answer" ? "No answer" : "Unknown"}
+                            </Pill>
+                            <Pill tone={r.disposition === "interested" ? "green" : r.disposition === "call_back_later" ? "amber" : r.disposition === "needs_support" ? "blue" : r.disposition === "not_interested" || r.disposition === "wrong_number" ? "red" : "neutral"}>
+                              {r.disposition.replace(/_/g, " ").toUpperCase()}
+                            </Pill>
+                          </div>
+                        </div>
+                      </td>
+
+                      <td style={{ ...td, maxWidth: 360 }}>
+                        <span
+                          title={r.cartPreview ?? ""}
+                          style={{
+                            display: "inline-block",
+                            maxWidth: 360,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            fontWeight: 900,
+                          }}
+                        >
+                          {r.cartPreview ?? "-"}
+                        </span>
+                      </td>
+
+                      <td style={td}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                            <SmallStatusDot tone={statusTone} />
+                            <span style={{ fontWeight: 1100 }}>{safeStr(r.status).toUpperCase()}</span>
+                          </span>
+                          {r.sb?.ai_status ? (
+                            <Pill
+                              tone={
+                                safeStr(r.sb.ai_status).toLowerCase() === "done"
+                                  ? "green"
+                                  : safeStr(r.sb.ai_status).toLowerCase() === "processing"
+                                  ? "blue"
+                                  : safeStr(r.sb.ai_status).toLowerCase() === "pending"
+                                  ? "amber"
+                                  : safeStr(r.sb.ai_status).toLowerCase() === "error"
+                                  ? "red"
+                                  : "neutral"
+                              }
+                              title={r.sb?.ai_error ?? ""}
+                            >
+                              AI: {safeStr(r.sb.ai_status).toUpperCase()}
+                            </Pill>
+                          ) : (
+                            <Pill>AI: —</Pill>
+                          )}
+                        </div>
+                      </td>
+
+                      <td style={td}>
+                        <Pill tone={outcomeTone} title="AI outcome">
+                          {r.callOutcome ? safeStr(r.callOutcome).toUpperCase() : "—"}
+                        </Pill>
+                      </td>
+
+                      <td style={td}>
+                        <Pill
+                          tone={
+                            r.buyProbabilityPct == null
+                              ? "neutral"
+                              : r.buyProbabilityPct >= 70
+                              ? "green"
+                              : r.buyProbabilityPct >= 40
+                              ? "amber"
+                              : "red"
+                          }
+                        >
+                          {r.buyProbabilityPct == null ? "—" : `${r.buyProbabilityPct}%`}
+                        </Pill>
+                      </td>
+
+                      <td style={td}>
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontWeight: 1100 }}>{formatWhen(r.scheduledFor)}</div>
+                          <div style={{ fontSize: 11, fontWeight: 900, color: "rgba(17,24,39,0.45)" }}>
+                            Created {formatWhen(r.createdAt)}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {filtered.length === 0 ? (
+                  <tr>
+                    <td style={{ padding: 14, color: "rgba(17,24,39,0.55)", fontWeight: 950 }} colSpan={7}>
+                      No rows
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={card}>
+            <div
+              style={{
+                padding: 12,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                borderBottom: "1px solid rgba(0,0,0,0.08)",
+              }}
+            >
+              <div style={sectionTitle}>Live Activity</div>
+              <button
+                type="button"
+                onClick={() => revalidator.revalidate()}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  background: "white",
+                  cursor: "pointer",
+                  fontWeight: 950,
+                  fontSize: 12,
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+
+            <div style={{ padding: 10, display: "grid", gap: 10 }}>
+              {liveActivity.map((r) => {
+                const t = statusToneFromJobStatus(r.status);
+                const label =
+                  safeStr(r.status).toUpperCase() === "CALLING"
+                    ? "Calling"
+                    : safeStr(r.status).toUpperCase() === "COMPLETED"
+                    ? "Ended"
+                    : safeStr(r.status).toUpperCase() === "QUEUED"
+                    ? "Queued"
+                    : safeStr(r.status).toUpperCase() === "FAILED"
+                    ? "Failed"
+                    : safeStr(r.status).toUpperCase();
+
+                return (
                   <div
+                    key={r.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      padding: 10,
+                      borderRadius: 12,
+                      border: "1px solid rgba(0,0,0,0.10)",
+                      background: "rgba(0,0,0,0.02)",
+                    }}
+                  >
+                    <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <SmallStatusDot tone={t} />
+                        <div style={{ fontWeight: 1150, color: "rgba(17,24,39,0.90)" }}>
+                          {label} • {safeStr(r.checkoutId)}
+                        </div>
+                      </div>
+                      <div style={{ fontWeight: 900, color: "rgba(17,24,39,0.60)", fontSize: 12 }}>
+                        {r.customerName ?? "-"} • {formatWhen(r.createdAt)}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {r.callOutcome ? (
+                        <Pill tone={toCallOutcomeTone(r.callOutcome)}>{safeStr(r.callOutcome).toUpperCase()}</Pill>
+                      ) : (
+                        <Pill>—</Pill>
+                      )}
+                      {r.isRecovered ? <Pill tone="green">RECOVERED</Pill> : null}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {liveActivity.length === 0 ? (
+                <div style={{ padding: 10, color: "rgba(17,24,39,0.55)", fontWeight: 950 }}>
+                  No activity
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div style={card}>
+            <div style={{ padding: 12, borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
+              <div style={sectionTitle}>Top Reasons (AI)</div>
+            </div>
+
+            <div style={{ padding: 12, display: "grid", gap: 10 }}>
+              {topReasons.map(([tag, count]) => {
+                const pretty = tag.replace(/_/g, " ");
+                return (
+                  <div
+                    key={tag}
                     style={{
                       display: "flex",
                       alignItems: "center",
-                      gap: 8,
-                      border: "1px solid rgba(0,0,0,0.10)",
-                      background: "rgba(0,0,0,0.02)",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      padding: 10,
                       borderRadius: 12,
-                      padding: "8px 10px",
-                      minWidth: 320,
+                      border: "1px solid rgba(0,0,0,0.10)",
+                      background: "white",
                     }}
                   >
-                    <span style={{ fontWeight: 1000, color: "rgba(17,24,39,0.45)" }}>⌕</span>
-                    <input
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      placeholder="Search calls..."
-                      style={{
-                        border: "none",
-                        outline: "none",
-                        background: "transparent",
-                        width: "100%",
-                        fontWeight: 900,
-                        color: "rgba(17,24,39,0.85)",
-                      }}
-                    />
-                  </div>
-
-                  <Pill title="Rows">{filteredJobs.length}</Pill>
-                </div>
-              </div>
-            </div>
-
-            <div style={listAndDetailWrap}>
-              <div
-                style={{
-                  border: "1px solid rgba(0,0,0,0.08)",
-                  borderRadius: 16,
-                  overflow: "hidden",
-                  background: "white",
-                  boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
-                  minWidth: 0,
-                }}
-              >
-                <div style={{ maxHeight: 620, overflow: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1180 }}>
-                    <thead>
-                      <tr>
-                        <th style={headerCell}>Checkout</th>
-                        <th style={headerCell}>Customer</th>
-                        <th style={headerCell}>Cart</th>
-                        <th style={headerCell}>Status</th>
-                        <th style={headerCell}>AI</th>
-                        <th style={headerCell}>Outcome</th>
-                        <th style={headerCell}>Scheduled</th>
-                        <th style={headerCell}>Attempts</th>
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {filteredJobs.map((j) => {
-                        const isSelected = j.id === selectedId;
-                        return (
-                          <tr
-                            key={j.id}
-                            onClick={() => setSelectedId(j.id)}
-                            style={{
-                              background: j.isRecovered
-                                ? "linear-gradient(90deg, rgba(16,185,129,0.12), rgba(16,185,129,0.02) 60%, rgba(255,255,255,1) 100%)"
-                                : isSelected
-                                ? "rgba(59,130,246,0.06)"
-                                : "white",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <td style={{ ...cell, color: "rgba(30,58,138,0.95)" }}>
-                              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                                <span>{j.checkoutId}</span>
-                                {j.isRecovered ? <Pill tone="green">RECOVERED</Pill> : null}
-                              </div>
-                            </td>
-
-                            <td style={cell}>
-                              <div style={{ display: "grid", gap: 4 }}>
-                                <div style={{ fontWeight: 1100 }}>{j.customerName ?? "-"}</div>
-                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                  <AnsweredPill answered={j.answeredFlag} />
-                                  <DispositionPill d={j.disposition} />
-                                  <BuyPill pct={j.buyProbabilityPct} />
-                                  {j.sentiment ? <Pill title="Sentiment">{j.sentiment.toUpperCase()}</Pill> : null}
-                                </div>
-                              </div>
-                            </td>
-
-                            <td style={{ ...cell, maxWidth: 320 }}>
-                              <span
-                                title={j.cartPreview ?? ""}
-                                style={{
-                                  display: "inline-block",
-                                  maxWidth: 320,
-                                  whiteSpace: "nowrap",
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  fontWeight: 900,
-                                }}
-                              >
-                                {j.cartPreview ?? "-"}
-                              </span>
-                            </td>
-
-                            <td style={cell}>
-                              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                                <StatusPill status={j.status} />
-                                {j.sentiment ? <Pill title="Sentiment">{j.sentiment.toUpperCase()}</Pill> : null}
-                              </div>
-                            </td>
-
-                            <td style={cell}>
-                              <AiStatusPill status={j.sb?.ai_status ?? null} err={j.sb?.ai_error ?? null} />
-                            </td>
-
-                            <td style={cell}>
-                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                <OutcomePill outcome={j.callOutcome} />
-                                {j.humanIntervention === true ? (
-                                  <Pill tone="amber" title="Needs human takeover">
-                                    HUMAN
-                                  </Pill>
-                                ) : null}
-                                {j.discountSuggest === true ? (
-                                  <Pill tone="blue" title="AI suggests discount">
-                                    DISC
-                                  </Pill>
-                                ) : null}
-                              </div>
-                            </td>
-
-                            <td style={cell}>
-                              <div style={{ display: "grid", gap: 4 }}>
-                                <div style={{ fontWeight: 1000 }}>{formatWhen(j.scheduledFor)}</div>
-                                <div style={{ fontSize: 11, fontWeight: 900, color: "rgba(17,24,39,0.40)" }}>
-                                  Created {formatWhen(j.createdAt)}
-                                </div>
-                              </div>
-                            </td>
-
-                            <td style={cell}>{j.attempts}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  position: isNarrow ? "relative" : "sticky",
-                  top: isNarrow ? undefined : 12,
-                  border: "1px solid rgba(0,0,0,0.08)",
-                  borderRadius: 16,
-                  background: "white",
-                  overflow: "hidden",
-                  minWidth: 0,
-                  width: isNarrow ? "100%" : 420,
-                  justifySelf: "stretch",
-                  boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
-                }}
-              >
-                <div style={{ padding: 14, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                    <div style={{ display: "grid", gap: 4 }}>
-                      <div style={{ fontSize: 13, fontWeight: 1000, color: "rgba(17,24,39,0.80)" }}>
-                        Call intelligence
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                      <div
+                        style={{
+                          width: 26,
+                          height: 26,
+                          borderRadius: 999,
+                          border: "1px solid rgba(0,0,0,0.10)",
+                          background: "rgba(59,130,246,0.08)",
+                          display: "grid",
+                          placeItems: "center",
+                          fontWeight: 1150,
+                          color: "rgba(30,58,138,0.92)",
+                        }}
+                      >
+                        i
                       </div>
-                      <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(17,24,39,0.45)" }}>
-                        {selected ? `Created ${formatWhen(selected.createdAt)}` : "Select a row"}
+                      <div style={{ fontWeight: 1100, color: "rgba(17,24,39,0.85)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {pretty}
                       </div>
                     </div>
-
-                    {selected ? (
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                        <StatusPill status={selected.status} />
-                        <OutcomePill outcome={selected.callOutcome} />
-                        {selected.isRecovered ? <Pill tone="green">RECOVERED</Pill> : null}
-                      </div>
-                    ) : null}
+                    <Pill title="Count">{count}</Pill>
                   </div>
+                );
+              })}
+
+              {topReasons.length === 0 ? (
+                <div style={{ padding: 10, color: "rgba(17,24,39,0.55)", fontWeight: 950 }}>
+                  No tags yet
                 </div>
+              ) : null}
+            </div>
+          </div>
 
-                <div style={{ padding: 14, display: "grid", gap: 12 }}>
-                  {!selected ? (
-                    <div style={{ color: "rgba(17,24,39,0.45)", fontWeight: 950 }}>
-                      Select a job to see AI outcome, next step, objections, and follow-up.
-                    </div>
-                  ) : (
-                    <>
-                      <div style={{ display: "grid", gap: 6 }}>
-                        <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Key</div>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <Pill title="Checkout ID">{selected.checkoutId}</Pill>
+          <div style={card}>
+            <div style={{ padding: 12, borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
+              <div style={sectionTitle}>Controls</div>
+            </div>
+            <div style={{ padding: 12, display: "grid", gap: 10 }}>
+              <Form method="post">
+                <input type="hidden" name="intent" value="run_jobs" />
+                <button
+                  type="submit"
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(59,130,246,0.25)",
+                    background: "rgba(59,130,246,0.10)",
+                    cursor: "pointer",
+                    fontWeight: 1100,
+                  }}
+                >
+                  Run queued jobs
+                </button>
+              </Form>
 
-                          {selected.providerCallId ? (
-                            <Pill title="Vapi call id">{selected.providerCallId.slice(0, 14)}…</Pill>
-                          ) : null}
-                          {selected.sb?.call_job_id ? (
-                            <Pill title="call_job_id">{String(selected.sb.call_job_id).slice(0, 12)}…</Pill>
-                          ) : null}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <Pill title="Provider">{vapiConfigured ? "Vapi ready" : "Sim mode"}</Pill>
+                <Pill title="Queued">{stats.queuedCalls}</Pill>
+                <Pill title="Calling">{stats.callingNow}</Pill>
+                <Pill title="Completed (7d)">{stats.completedCalls7d}</Pill>
+              </div>
 
-                          {selected.sb?.latest_status ? (
-                            <Pill title="Latest status">{String(selected.sb.latest_status)}</Pill>
-                          ) : null}
-                          {selected.endedReason ? <Pill title="Ended reason">{selected.endedReason}</Pill> : null}
-
-                          <AiStatusPill status={selected.sb?.ai_status ?? null} err={selected.sb?.ai_error ?? null} />
-                        </div>
-
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {selected.sb?.received_at ? <Pill title="received_at">{formatWhen(selected.sb.received_at)}</Pill> : null}
-                          {selected.sb?.last_received_at ? (
-                            <Pill title="last_received_at">{formatWhen(selected.sb.last_received_at)}</Pill>
-                          ) : null}
-                          {selected.sb?.ai_processed_at ? (
-                            <Pill title="ai_processed_at">{formatWhen(selected.sb.ai_processed_at)}</Pill>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Signals</div>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <AnsweredPill answered={selected.answeredFlag} />
-                          <DispositionPill d={selected.disposition} />
-                          <BuyPill pct={selected.buyProbabilityPct} />
-                          {selected.sentiment ? <Pill title="Sentiment">{selected.sentiment.toUpperCase()}</Pill> : null}
-                          {selected.humanIntervention === true ? <Pill tone="amber">HUMAN TAKEOVER</Pill> : null}
-                          {selected.discountSuggest === true ? (
-                            <Pill
-                              tone="blue"
-                              title={selected.discountPercent != null ? `Suggest ${selected.discountPercent}%` : ""}
-                            >
-                              DISCOUNT SUGGESTED
-                            </Pill>
-                          ) : null}
-                          {selected.sb?.voicemail === true ? <Pill tone="amber" title="Voicemail detected">VOICEMAIL</Pill> : null}
-                          {selected.sb?.customer_intent ? (
-                            <Pill title="customer_intent">{String(selected.sb.customer_intent)}</Pill>
-                          ) : null}
-                          {selected.isRecovered ? <Pill tone="green">RECOVERED</Pill> : null}
-                        </div>
-
-                        {selected.tags.length ? (
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {selected.tags.slice(0, 12).map((t) => (
-                              <Pill key={t} title="Tag">
-                                {t}
-                              </Pill>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Summary</div>
-                        <div
-                          style={{
-                            border: "1px solid rgba(0,0,0,0.10)",
-                            borderRadius: 14,
-                            padding: 10,
-                            fontWeight: 900,
-                            color: "rgba(17,24,39,0.78)",
-                            lineHeight: 1.35,
-                            background: "rgba(0,0,0,0.02)",
-                            whiteSpace: "pre-wrap",
-                          }}
-                        >
-                          {selected.summaryText ?? "—"}
-                        </div>
-
-                        {selectedKeyQuotes.length ? (
-                          <div
-                            style={{
-                              border: "1px solid rgba(0,0,0,0.10)",
-                              borderRadius: 14,
-                              padding: 10,
-                              fontWeight: 900,
-                              color: "rgba(17,24,39,0.78)",
-                              background: "white",
-                              whiteSpace: "pre-wrap",
-                              lineHeight: 1.35,
-                            }}
-                          >
-                            <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>
-                              KEY QUOTES
-                            </div>
-                            {selectedKeyQuotes.slice(0, 6).map((qq) => `• ${qq}`).join("\n")}
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>
-                          Recommended next action
-                        </div>
-                        <div
-                          style={{
-                            border: "1px solid rgba(59,130,246,0.20)",
-                            borderRadius: 14,
-                            padding: 10,
-                            fontWeight: 950,
-                            color: "rgba(30,58,138,0.92)",
-                            lineHeight: 1.35,
-                            background: "rgba(59,130,246,0.06)",
-                            whiteSpace: "pre-wrap",
-                          }}
-                        >
-                          {selected.nextActionText ?? "—"}
-                        </div>
-                      </div>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>
-                          Suggested follow-up (email)
-                        </div>
-                        <div
-                          style={{
-                            border: "1px solid rgba(0,0,0,0.10)",
-                            borderRadius: 14,
-                            padding: 10,
-                            fontWeight: 900,
-                            color: "rgba(17,24,39,0.78)",
-                            lineHeight: 1.35,
-                            background: "white",
-                            whiteSpace: "pre-wrap",
-                          }}
-                        >
-                          {selected.followUpText ?? "—"}
-                        </div>
-
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <SoftButton
-                            type="button"
-                            onClick={() => copy(selected.followUpText ?? "")}
-                            disabled={!selected.followUpText}
-                            style={!selected.followUpText ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-                          >
-                            Copy follow-up
-                          </SoftButton>
-
-                          {selected.sb?.human_intervention_reason ? (
-                            <SoftButton
-                              type="button"
-                              onClick={() => copy(String(selected.sb?.human_intervention_reason ?? ""))}
-                            >
-                              Copy human reason
-                            </SoftButton>
-                          ) : null}
-
-                          {selected.recordingUrl ? (
-                            <a href={selected.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-                              <SoftButton type="button" tone="primary">
-                                Open recording
-                              </SoftButton>
-                            </a>
-                          ) : (
-                            <SoftButton type="button" disabled style={{ opacity: 0.5, cursor: "not-allowed" }}>
-                              Open recording
-                            </SoftButton>
-                          )}
-                        </div>
-                      </div>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>
-                          Objections / Issues
-                        </div>
-                        <div style={{ display: "grid", gap: 8 }}>
-                          <div
-                            style={{
-                              border: "1px solid rgba(0,0,0,0.10)",
-                              borderRadius: 14,
-                              padding: 10,
-                              fontWeight: 900,
-                              color: "rgba(17,24,39,0.78)",
-                              background: "rgba(0,0,0,0.02)",
-                              whiteSpace: "pre-wrap",
-                              lineHeight: 1.35,
-                            }}
-                          >
-                            <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>
-                              OBJECTIONS
-                            </div>
-                            {selectedObjections.length ? selectedObjections.slice(0, 8).join("\n") : "—"}
-                          </div>
-
-                          <div
-                            style={{
-                              border: "1px solid rgba(0,0,0,0.10)",
-                              borderRadius: 14,
-                              padding: 10,
-                              fontWeight: 900,
-                              color: "rgba(17,24,39,0.78)",
-                              background: "rgba(0,0,0,0.02)",
-                              whiteSpace: "pre-wrap",
-                              lineHeight: 1.35,
-                            }}
-                          >
-                            <div style={{ fontSize: 11, fontWeight: 1000, color: "rgba(17,24,39,0.45)", marginBottom: 6 }}>
-                              ISSUES TO FIX
-                            </div>
-                            {selectedIssues.length ? selectedIssues.slice(0, 8).join("\n") : "—"}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>
-                          Transcript / Report
-                        </div>
-
-                        <div
-                          style={{
-                            border: "1px solid rgba(0,0,0,0.10)",
-                            borderRadius: 14,
-                            padding: 10,
-                            fontWeight: 900,
-                            color: "rgba(17,24,39,0.78)",
-                            background: "white",
-                            whiteSpace: "pre-wrap",
-                            lineHeight: 1.35,
-                            maxHeight: 160,
-                            overflow: "auto",
-                          }}
-                        >
-                          {selected.sb?.transcript || selected.transcript || "—"}
-                        </div>
-
-                        {selected.sb?.end_of_call_report ? (
-                          <div
-                            style={{
-                              border: "1px solid rgba(0,0,0,0.10)",
-                              borderRadius: 14,
-                              padding: 10,
-                              fontWeight: 900,
-                              color: "rgba(17,24,39,0.78)",
-                              background: "rgba(0,0,0,0.02)",
-                              whiteSpace: "pre-wrap",
-                              lineHeight: 1.35,
-                              maxHeight: 160,
-                              overflow: "auto",
-                            }}
-                          >
-                            <div
-                              style={{
-                                fontSize: 11,
-                                fontWeight: 1000,
-                                color: "rgba(17,24,39,0.45)",
-                                marginBottom: 6,
-                              }}
-                            >
-                              END OF CALL REPORT
-                            </div>
-                            {String(selected.sb.end_of_call_report)}
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>Manual</div>
-                        <Form method="post">
-                          <input type="hidden" name="intent" value="manual_call" />
-                          <input type="hidden" name="callJobId" value={selected.id} />
-                          <button
-                            type="submit"
-                            disabled={selected.status !== "QUEUED"}
-                            style={{
-                              padding: "10px 12px",
-                              borderRadius: 12,
-                              border: "1px solid rgba(0,0,0,0.12)",
-                              background: selected.status === "QUEUED" ? "white" : "#f3f3f3",
-                              cursor: selected.status === "QUEUED" ? "pointer" : "not-allowed",
-                              fontWeight: 1000,
-                              width: "100%",
-                            }}
-                          >
-                            Call now
-                          </button>
-                        </Form>
-                      </div>
-
-                      <div style={{ display: "grid", gap: 6 }}>
-                        <div style={{ fontSize: 12, fontWeight: 1000, color: "rgba(17,24,39,0.55)" }}>AI raw</div>
-                        <div
-                          style={{
-                            border: "1px solid rgba(0,0,0,0.10)",
-                            borderRadius: 14,
-                            padding: 10,
-                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                            fontSize: 11,
-                            fontWeight: 900,
-                            color: "rgba(17,24,39,0.65)",
-                            background: "rgba(0,0,0,0.02)",
-                            maxHeight: 200,
-                            overflow: "auto",
-                            whiteSpace: "pre-wrap",
-                          }}
-                        >
-                          {selected.sb
-                            ? JSON.stringify(
-                                {
-                                  ai_status: selected.sb.ai_status,
-                                  ai_error: selected.sb.ai_error,
-                                  ai_processed_at: selected.sb.ai_processed_at,
-
-                                  shop: selected.sb.shop,
-                                  checkout_id: selected.sb.checkout_id,
-                                  call_job_id: selected.sb.call_job_id,
-                                  call_id: selected.sb.call_id,
-
-                                  received_at: selected.sb.received_at,
-                                  last_received_at: selected.sb.last_received_at,
-
-                                  latest_status: selected.sb.latest_status,
-                                  ended_reason: selected.sb.ended_reason,
-
-                                  recording_url: selected.sb.recording_url,
-                                  stereo_recording_url: selected.sb.stereo_recording_url,
-                                  log_url: selected.sb.log_url,
-
-                                  answered: selected.sb.answered,
-                                  voicemail: selected.sb.voicemail,
-                                  sentiment: selected.sb.sentiment,
-                                  tone: selected.sb.tone,
-                                  buy_probability: selected.sb.buy_probability,
-                                  customer_intent: selected.sb.customer_intent,
-                                  disposition: selected.sb.disposition,
-                                  call_outcome: selected.sb.call_outcome,
-
-                                  summary: selected.sb.summary,
-                                  summary_clean: selected.sb.summary_clean,
-                                  next_best_action: selected.sb.next_best_action,
-                                  best_next_action: selected.sb.best_next_action,
-                                  follow_up_message: selected.sb.follow_up_message,
-
-                                  tags: selected.sb.tags,
-                                  tagcsv: selected.sb.tagcsv,
-                                  key_quotes: selected.sb.key_quotes,
-                                  key_quotes_text: selected.sb.key_quotes_text,
-                                  objections: selected.sb.objections,
-                                  objections_text: selected.sb.objections_text,
-                                  issues_to_fix: selected.sb.issues_to_fix,
-                                  issues_to_fix_text: selected.sb.issues_to_fix_text,
-
-                                  human_intervention: selected.sb.human_intervention,
-                                  human_intervention_reason: selected.sb.human_intervention_reason,
-                                  discount_suggest: selected.sb.discount_suggest,
-                                  discount_percent: selected.sb.discount_percent,
-                                  discount_rationale: selected.sb.discount_rationale,
-
-                                  structured_outputs: selected.sb.structured_outputs,
-                                  payload: selected.sb.payload,
-                                  ai_result: selected.sb.ai_result,
-                                  ai_insights: selected.sb.ai_insights,
-                                },
-                                null,
-                                2
-                              )
-                            : "—"}
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(17,24,39,0.55)", lineHeight: 1.4 }}>
+                ENV required: VAPI_API_KEY, VAPI_ASSISTANT_ID, VAPI_PHONE_NUMBER_ID, VAPI_SERVER_URL.
               </div>
             </div>
-
-            <div style={{ marginTop: 10, fontWeight: 900, fontSize: 12, color: "rgba(17,24,39,0.45)" }}>
-              {vapiConfigured ? "Live updates every 5s when calls are active." : "Vapi not configured in ENV. Calls can run in sim mode."}
-            </div>
-          </>
-        )}
+          </div>
+        </div>
       </div>
     </div>
   );
