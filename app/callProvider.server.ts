@@ -35,7 +35,10 @@ function buildSystemPrompt(args: {
     items.length === 0
       ? "No cart items available."
       : items
-          .map((it: any) => `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`)
+          .map(
+            (it: any) =>
+              `- ${it?.title ?? "Item"} x${Number(it?.quantity ?? 1)}`
+          )
           .join("\n");
 
   const base = `
@@ -64,13 +67,15 @@ ${cartText}
   return `${base}\n\nMerchant instructions (must follow):\n${merchant}`.trim();
 }
 
-export async function startVapiCallForJob(params: { shop: string; callJobId: string }) {
+export async function startVapiCallForJob(params: {
+  shop: string;
+  callJobId: string;
+}) {
   const VAPI_API_KEY = requiredEnv("VAPI_API_KEY");
   const VAPI_ASSISTANT_ID = requiredEnv("VAPI_ASSISTANT_ID");
   const VAPI_PHONE_NUMBER_ID = requiredEnv("VAPI_PHONE_NUMBER_ID");
   const VAPI_SERVER_URL = requiredEnv("VAPI_SERVER_URL");
   const VAPI_SERVER_SECRET = requiredEnv("VAPI_SERVER_SECRET");
-
 
   const job = await db.callJob.findFirst({
     where: { id: params.callJobId, shop: params.shop },
@@ -110,7 +115,6 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
 
   const webhookUrl = VAPI_SERVER_URL.replace(/\/$/, "");
 
-
   const res = await fetch("https://api.vapi.ai/call/phone", {
     method: "POST",
     headers: {
@@ -138,22 +142,16 @@ export async function startVapiCallForJob(params: { shop: string; callJobId: str
               content:
                 "Start the call now. Greet the customer and mention you noticed they almost completed checkout. Ask if they need help finishing the order.",
             },
-serverUrl: webhookUrl,
-  serverAuthentication: {
-    type: "bearer",
-    token: VAPI_SERVER_SECRET,
-    headerName: "x-tool-secret",
-  },
-  serverMessages: [
-    "status-update",
-    "end-of-call-report",
-    'transcript[transcriptType="final"]',
-  
           ],
         },
 
-        // webhook
+        // webhook (assistant-level)
         serverUrl: webhookUrl,
+        serverAuthentication: {
+          type: "bearer",
+          token: VAPI_SERVER_SECRET,
+          headerName: "x-tool-secret",
+        },
         serverMessages: [
           "status-update",
           "end-of-call-report",
@@ -167,6 +165,7 @@ serverUrl: webhookUrl,
         },
       },
 
+      // optional top-level metadata too (safe)
       metadata: {
         shop: params.shop,
         callJobId: job.id,
@@ -194,7 +193,7 @@ serverUrl: webhookUrl,
     where: { id: job.id },
     data: {
       providerCallId: providerCallId || null,
-      outcome: `VAPI_CALL_CREATED`,
+      outcome: "VAPI_CALL_CREATED",
       status: "CALLING",
     },
   });
