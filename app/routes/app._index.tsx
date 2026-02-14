@@ -11,7 +11,7 @@ import {
   syncAbandonedCheckoutsFromShopify,
   enqueueCallJobs,
 } from "../callRecovery.server";
-import { isVapiConfiguredFromEnv } from "../callInsights.server";
+import { isVapiConfiguredFromEnv } from "../lib/callInsights.server";
 
 type LoaderData = {
   shop: string;
