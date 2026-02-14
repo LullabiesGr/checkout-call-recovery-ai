@@ -11,7 +11,6 @@ import {
   syncAbandonedCheckoutsFromShopify,
   enqueueCallJobs,
 } from "../callRecovery.server";
-import { isVapiConfiguredFromEnv } from "../lib/callInsights.server";
 
 type LoaderData = {
   shop: string;
@@ -71,7 +70,9 @@ function StatCard(props: { label: string; value: any; sub: string; icon?: string
           {props.icon ?? "•"}
         </div>
       </div>
-      <div style={{ marginTop: 8, fontWeight: 1000, fontSize: 22, color: "rgba(17,24,39,0.92)" }}>{props.value}</div>
+      <div style={{ marginTop: 8, fontWeight: 1000, fontSize: 22, color: "rgba(17,24,39,0.92)" }}>
+        {props.value}
+      </div>
       <div style={{ marginTop: 4, fontWeight: 850, fontSize: 12, color: "rgba(17,24,39,0.45)" }}>{props.sub}</div>
     </div>
   );
@@ -96,6 +97,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     maxAttempts: Number(settings.maxAttempts ?? 2),
     retryMinutes: Number(settings.retryMinutes ?? 180),
   });
+
+  const { isVapiConfiguredFromEnv } = await import("../lib/callInsights.server");
 
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
@@ -137,11 +140,7 @@ export default function DashboardIndex() {
   const { shop, stats, currency, vapiConfigured } = useLoaderData<typeof loader>();
 
   const money = (n: number) =>
-    new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency,
-      maximumFractionDigits: 2,
-    }).format(n);
+    new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
 
   return (
     <div style={{ padding: 16, minWidth: 0 }}>

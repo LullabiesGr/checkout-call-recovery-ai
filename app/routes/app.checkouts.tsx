@@ -9,38 +9,18 @@ import { ensureSettings } from "../callRecovery.server";
 
 import {
   buildCartPreview,
-  fetchSupabaseSummaries,
   formatWhen,
   pickLatestJobByCheckout,
   pickRecordingUrl,
   safeStr,
-} from "../lib/callInsights.server";
+  type SupabaseCallSummary,
+} from "../lib/callInsights.shared";
 
-type Row = {
-  checkoutId: string;
-  status: string;
-  updatedAt: string;
-  abandonedAt: string | null;
-  customerName: string | null;
-  phone: string | null;
-  email: string | null;
-  value: number;
-  currency: string;
-  cartPreview: string | null;
-
-  callStatus: string | null;
-  callOutcome: string | null;
-  aiStatus: string | null;
-  buyProbabilityPct: number | null;
-  recordingUrl: string | null;
-};
-
-type LoaderData = {
-  shop: string;
-  rows: Row[];
-};
-
-function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
+function Pill(props: {
+  children: any;
+  tone?: "neutral" | "green" | "blue" | "amber" | "red";
+  title?: string;
+}) {
   const tone = props.tone ?? "neutral";
   const t =
     tone === "green"
@@ -76,9 +56,34 @@ function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amb
 
 function CheckoutStatusPill({ status }: { status: string }) {
   const s = safeStr(status).toUpperCase();
-  const tone = s === "CONVERTED" ? "green" : s === "ABANDONED" ? "red" : s === "OPEN" ? "amber" : "neutral";
+  const tone =
+    s === "CONVERTED" ? "green" : s === "ABANDONED" ? "red" : s === "OPEN" ? "amber" : "neutral";
   return <Pill tone={tone as any}>{s}</Pill>;
 }
+
+type Row = {
+  checkoutId: string;
+  status: string;
+  updatedAt: string;
+  abandonedAt: string | null;
+  customerName: string | null;
+  phone: string | null;
+  email: string | null;
+  value: number;
+  currency: string;
+  cartPreview: string | null;
+
+  callStatus: string | null;
+  callOutcome: string | null;
+  aiStatus: string | null;
+  buyProbabilityPct: number | null;
+  recordingUrl: string | null;
+};
+
+type LoaderData = {
+  shop: string;
+  rows: Row[];
+};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -125,20 +130,143 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const latestJobMap = pickLatestJobByCheckout(jobs);
 
   const checkoutIds = checkouts.map((c) => String(c.checkoutId)).filter(Boolean);
-
   const callIds = checkouts
     .map((c) => {
       const j = latestJobMap.get(String(c.checkoutId)) ?? null;
       return j?.providerCallId ? String(j.providerCallId) : "";
     })
     .filter(Boolean);
-
   const jobIds = checkouts
     .map((c) => {
       const j = latestJobMap.get(String(c.checkoutId)) ?? null;
       return j?.id ? String(j.id) : "";
     })
     .filter(Boolean);
+
+  // -----------------------------
+  // Inline server-only SB fetch
+  // (keeps client bundle clean)
+  // -----------------------------
+  function uniq(values: string[]) {
+    const s = new Set(values.map((x) => x.trim()).filter(Boolean));
+    return Array.from(s);
+  }
+  function cleanIdList(values: string[]) {
+    return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
+  }
+
+  async function fetchSupabaseSummaries(opts: {
+    shop: string;
+    callIds?: string[];
+    callJobIds?: string[];
+    checkoutIds?: string[];
+  }): Promise<Map<string, SupabaseCallSummary>> {
+    const out = new Map<string, SupabaseCallSummary>();
+
+    const url = process.env.SUPABASE_URL?.trim();
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    if (!url || !key) return out;
+
+    const callIds = cleanIdList(opts.callIds ?? []);
+    const callJobIds = cleanIdList(opts.callJobIds ?? []);
+    const checkoutIds = cleanIdList(opts.checkoutIds ?? []);
+
+    if (callIds.length === 0 && callJobIds.length === 0 && checkoutIds.length === 0) return out;
+
+    const select = [
+      "id",
+      "shop",
+      "call_id",
+      "call_job_id",
+      "checkout_id",
+      "received_at",
+      "last_received_at",
+      "latest_status",
+      "ended_reason",
+      "recording_url",
+      "stereo_recording_url",
+      "log_url",
+      "transcript",
+      "end_of_call_report",
+      "call_outcome",
+      "disposition",
+      "answered",
+      "voicemail",
+      "sentiment",
+      "tone",
+      "buy_probability",
+      "customer_intent",
+      "tags",
+      "tagcsv",
+      "summary",
+      "summary_clean",
+      "next_best_action",
+      "best_next_action",
+      "follow_up_message",
+      "key_quotes",
+      "key_quotes_text",
+      "objections",
+      "objections_text",
+      "issues_to_fix",
+      "issues_to_fix_text",
+      "human_intervention",
+      "human_intervention_reason",
+      "discount_suggest",
+      "discount_percent",
+      "discount_rationale",
+      "ai_status",
+      "ai_error",
+      "ai_processed_at",
+      "ai_result",
+      "ai_insights",
+      "payload",
+      "structured_outputs",
+    ].join(",");
+
+    const orParts: string[] = [];
+    if (callIds.length) orParts.push(`call_id.in.(${callIds.join(",")})`);
+    if (callJobIds.length) orParts.push(`call_job_id.in.(${callJobIds.join(",")})`);
+    if (checkoutIds.length) orParts.push(`checkout_id.in.(${checkoutIds.join(",")})`);
+
+    const params = new URLSearchParams();
+    params.set("select", select);
+    params.set("or", `(${orParts.join(",")})`);
+
+    const withShopParams = new URLSearchParams(params);
+    withShopParams.set("shop", `eq.${opts.shop}`);
+
+    async function doFetch(p: URLSearchParams) {
+      const endpoint = `${url}/rest/v1/vapi_call_summaries?${p.toString()}`;
+      const r = await fetch(endpoint, {
+        method: "GET",
+        headers: {
+          apikey: key,
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+        },
+      });
+
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        console.error("[SB] fetch failed", r.status, r.statusText, body.slice(0, 800));
+        return null as any;
+      }
+      const data = (await r.json()) as SupabaseCallSummary[];
+      return Array.isArray(data) ? data : [];
+    }
+
+    let data = await doFetch(withShopParams);
+    if (data && data.length === 0) data = await doFetch(params);
+
+    for (const row of data || []) {
+      if (!row) continue;
+      if ((row as any).call_id) out.set(`call:${String((row as any).call_id)}`, row);
+      if ((row as any).call_job_id) out.set(`job:${String((row as any).call_job_id)}`, row);
+      if ((row as any).checkout_id) out.set(`co:${String((row as any).checkout_id)}`, row);
+    }
+
+    return out;
+  }
 
   const sbMap = await fetchSupabaseSummaries({
     shop,
@@ -154,15 +282,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const callId = j?.providerCallId ? String(j.providerCallId) : "";
     const jobId = j?.id ? String(j.id) : "";
 
-    const sb =
-      (callId ? sbMap.get(`call:${callId}`) : null) ||
-      (jobId ? sbMap.get(`job:${jobId}`) : null) ||
-      (checkoutId ? sbMap.get(`co:${checkoutId}`) : null) ||
+    const sb: SupabaseCallSummary | null =
+      (callId ? (sbMap.get(`call:${callId}`) as any) : null) ||
+      (jobId ? (sbMap.get(`job:${jobId}`) as any) : null) ||
+      (checkoutId ? (sbMap.get(`co:${checkoutId}`) as any) : null) ||
       null;
 
     const buyProbabilityPct =
-      typeof sb?.buy_probability === "number" && Number.isFinite(sb.buy_probability)
-        ? Math.round(sb.buy_probability)
+      typeof (sb as any)?.buy_probability === "number" && Number.isFinite((sb as any).buy_probability)
+        ? Math.round((sb as any).buy_probability)
         : null;
 
     return {
@@ -178,8 +306,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       cartPreview: buildCartPreview(c.itemsJson ?? null),
 
       callStatus: j ? String(j.status) : null,
-      callOutcome: sb?.call_outcome ? String(sb.call_outcome) : null,
-      aiStatus: sb?.ai_status ? String(sb.ai_status) : null,
+      callOutcome: (sb as any)?.call_outcome ? String((sb as any).call_outcome) : null,
+      aiStatus: (sb as any)?.ai_status ? String((sb as any).ai_status) : null,
       buyProbabilityPct,
       recordingUrl: (pickRecordingUrl(sb) ?? (j?.recordingUrl ? String(j.recordingUrl) : null)) ?? null,
     };
@@ -331,13 +459,17 @@ export default function Checkouts() {
                   </td>
                   <td style={cell}>{formatWhen(c.updatedAt)}</td>
                   <td style={cell}>{c.callStatus ? <Pill>{c.callStatus}</Pill> : <Pill>—</Pill>}</td>
-                  <td style={cell}>{c.aiStatus ? <Pill>{`AI: ${c.aiStatus.toUpperCase()}`}</Pill> : <Pill>AI: —</Pill>}</td>
+                  <td style={cell}>
+                    {c.aiStatus ? <Pill>{`AI: ${c.aiStatus.toUpperCase()}`}</Pill> : <Pill>AI: —</Pill>}
+                  </td>
                   <td style={cell}>
                     <Pill tone={c.callOutcome?.toLowerCase().includes("recovered") ? "green" : "neutral"}>
                       {c.callOutcome ? c.callOutcome.toUpperCase() : "—"}
                     </Pill>
                   </td>
-                  <td style={cell}>{c.buyProbabilityPct == null ? <Pill>—</Pill> : <Pill>{c.buyProbabilityPct}%</Pill>}</td>
+                  <td style={cell}>
+                    {c.buyProbabilityPct == null ? <Pill>—</Pill> : <Pill>{c.buyProbabilityPct}%</Pill>}
+                  </td>
                   <td style={cell}>
                     {c.recordingUrl ? (
                       <a href={c.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
