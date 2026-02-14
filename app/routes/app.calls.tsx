@@ -1,3 +1,4 @@
+// app/routes/app.calls.tsx
 import * as React from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Form, useLoaderData, useRevalidator, useRouteError } from "react-router";
@@ -12,60 +13,15 @@ import {
 } from "../callRecovery.server";
 import { createVapiCallForJob } from "../callProvider.server";
 
-import {
-  buildCartPreview,
-  fetchSupabaseSummaries,
-  formatWhen,
-  isVapiConfiguredFromEnv,
-  pickRecordingUrl,
-  safeStr,
-} from "../lib/callInsights.server";
-
-
-
-/* ---------- helpers (kept local to keep app._index light) ---------- */
-
-
-
-type SupabaseCallSummary = {
-  call_id: string;
-  call_job_id?: string | null;
-  checkout_id?: string | null;
-  latest_status?: string | null;
-  ended_reason?: string | null;
-  recording_url?: string | null;
-  stereo_recording_url?: string | null;
-  log_url?: string | null;
-  transcript?: string | null;
-  call_outcome?: string | null;
-  disposition?: string | null;
-  answered?: boolean | null;
-  voicemail?: boolean | null;
-  sentiment?: string | null;
-  tone?: string | null;
-  buy_probability?: number | null;
-  tags?: any;
-  tagcsv?: string | null;
-  summary?: string | null;
-  summary_clean?: string | null;
-  next_best_action?: string | null;
-  best_next_action?: string | null;
-  follow_up_message?: string | null;
-  ai_status?: string | null;
-  ai_error?: string | null;
-  ai_processed_at?: string | null;
-};
-
-function uniq(values: string[]) {
-  const s = new Set(values.map((x) => x.trim()).filter(Boolean));
-  return Array.from(s);
+function safeStr(v: any) {
+  return v == null ? "" : String(v);
 }
 
-function cleanIdList(values: string[]) {
-  return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
+function formatWhen(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString();
 }
-
-
 
 function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
   const tone = props.tone ?? "neutral";
@@ -103,8 +59,7 @@ function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amb
 
 function StatusPill({ status }: { status: string }) {
   const s = safeStr(status).toUpperCase();
-  const tone =
-    s === "COMPLETED" ? "green" : s === "CALLING" ? "blue" : s === "QUEUED" ? "amber" : s === "FAILED" ? "red" : "neutral";
+  const tone = s === "COMPLETED" ? "green" : s === "CALLING" ? "blue" : s === "QUEUED" ? "amber" : s === "FAILED" ? "red" : "neutral";
   return <Pill tone={tone as any}>{s}</Pill>;
 }
 
@@ -165,9 +120,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
   ]);
 
+  const vapiConfigured =
+    Boolean(process.env.VAPI_API_KEY?.trim()) &&
+    Boolean(process.env.VAPI_ASSISTANT_ID?.trim()) &&
+    Boolean(process.env.VAPI_PHONE_NUMBER_ID?.trim()) &&
+    Boolean(process.env.VAPI_SERVER_URL?.trim());
+
   const callIds = jobs.map((j) => String(j.providerCallId ?? "")).filter(Boolean);
   const jobIds = jobs.map((j) => String(j.id ?? "")).filter(Boolean);
   const checkoutIds = jobs.map((j) => String(j.checkoutId ?? "")).filter(Boolean);
+
+  // dynamic import (server-only)
+  const { fetchSupabaseSummaries, pickRecordingUrl } = await import("../lib/callInsights.server");
 
   const sbMap = await fetchSupabaseSummaries({ shop, callIds, callJobIds: jobIds, checkoutIds });
 
@@ -192,19 +156,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       providerCallId: j.providerCallId ? String(j.providerCallId) : null,
       callOutcome: sb?.call_outcome ? String(sb.call_outcome) : null,
       aiStatus: sb?.ai_status ? String(sb.ai_status) : null,
-      summary: safeStr(sb?.summary_clean || sb?.summary).trim() || null,
-      nextAction: safeStr(sb?.next_best_action || sb?.best_next_action).trim() || null,
-      followUp: safeStr(sb?.follow_up_message).trim() || null,
-      recordingUrl: (pickRecordingUrl(sb) ?? (j.recordingUrl ? String(j.recordingUrl) : null)) ?? null,
+      summary: safeStr((sb as any)?.summary_clean || (sb as any)?.summary).trim() || null,
+      nextAction: safeStr((sb as any)?.next_best_action || (sb as any)?.best_next_action).trim() || null,
+      followUp: safeStr((sb as any)?.follow_up_message).trim() || null,
+      recordingUrl: (pickRecordingUrl(sb as any) ?? (j.recordingUrl ? String(j.recordingUrl) : null)) ?? null,
     };
   });
 
-  return {
-    shop,
-    vapiConfigured: isVapiConfiguredFromEnv(),
-    stats: { queued, calling, completed7d },
-    rows,
-  } satisfies LoaderData;
+  return { shop, vapiConfigured, stats: { queued, calling, completed7d }, rows } satisfies LoaderData;
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -216,9 +175,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const redirectBack = () => new Response(null, { status: 303, headers: { Location: "/app/calls" } });
 
+  const vapiOk =
+    Boolean(process.env.VAPI_API_KEY?.trim()) &&
+    Boolean(process.env.VAPI_ASSISTANT_ID?.trim()) &&
+    Boolean(process.env.VAPI_PHONE_NUMBER_ID?.trim()) &&
+    Boolean(process.env.VAPI_SERVER_URL?.trim());
+
   if (intent === "run_jobs") {
     const settings = await ensureSettings(shop);
-    const vapiOk = isVapiConfiguredFromEnv();
 
     const now = new Date();
     const jobs = await db.callJob.findMany({
@@ -273,7 +237,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const callJobId = String(fd.get("callJobId") ?? "").trim();
     if (!callJobId) return redirectBack();
 
-    const vapiOk = isVapiConfiguredFromEnv();
     if (!vapiOk) {
       await db.callJob.updateMany({
         where: { id: callJobId, shop },

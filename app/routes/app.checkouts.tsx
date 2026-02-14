@@ -1,3 +1,4 @@
+// app/routes/app.checkouts.tsx
 import * as React from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData, useRouteError } from "react-router";
@@ -6,43 +7,48 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { ensureSettings } from "../callRecovery.server";
 
-import {
-  buildCartPreview,
-  fetchSupabaseSummaries,
-  formatWhen,
-  pickLatestJobByCheckout,
-  pickRecordingUrl,
-  safeStr,
-} from "../lib/callInsights.server";
-
-
-
-
-type SupabaseCallSummary = {
-  call_id: string;
-  call_job_id?: string | null;
-  checkout_id?: string | null;
-  call_outcome?: string | null;
-  buy_probability?: number | null;
-  sentiment?: string | null;
-  tone?: string | null;
-  ai_status?: string | null;
-  recording_url?: string | null;
-  stereo_recording_url?: string | null;
-  log_url?: string | null;
-};
-
-function uniq(values: string[]) {
-  const s = new Set(values.map((x) => x.trim()).filter(Boolean));
-  return Array.from(s);
-}
-function cleanIdList(values: string[]) {
-  return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
+function safeStr(v: any) {
+  return v == null ? "" : String(v);
 }
 
+function formatWhen(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString();
+}
 
+function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
+  const tone = props.tone ?? "neutral";
+  const t =
+    tone === "green"
+      ? { bg: "rgba(16,185,129,0.10)", bd: "rgba(16,185,129,0.25)", tx: "#065f46" }
+      : tone === "blue"
+      ? { bg: "rgba(59,130,246,0.10)", bd: "rgba(59,130,246,0.25)", tx: "#1e3a8a" }
+      : tone === "amber"
+      ? { bg: "rgba(245,158,11,0.10)", bd: "rgba(245,158,11,0.25)", tx: "#92400e" }
+      : tone === "red"
+      ? { bg: "rgba(239,68,68,0.10)", bd: "rgba(239,68,68,0.25)", tx: "#7f1d1d" }
+      : { bg: "rgba(0,0,0,0.04)", bd: "rgba(0,0,0,0.10)", tx: "rgba(0,0,0,0.75)" };
 
-
+  return (
+    <span
+      title={props.title}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "3px 10px",
+        borderRadius: 999,
+        border: `1px solid ${t.bd}`,
+        background: t.bg,
+        color: t.tx,
+        fontWeight: 950,
+        fontSize: 12,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {props.children}
+    </span>
+  );
 }
 
 function CheckoutStatusPill({ status }: { status: string }) {
@@ -75,8 +81,6 @@ type LoaderData = {
   rows: Row[];
 };
 
-
-
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -106,19 +110,38 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       where: { shop },
       orderBy: { createdAt: "desc" },
       take: 800,
-      select: { id: true, checkoutId: true, status: true, scheduledFor: true, attempts: true, createdAt: true, providerCallId: true, recordingUrl: true },
+      select: {
+        id: true,
+        checkoutId: true,
+        status: true,
+        scheduledFor: true,
+        attempts: true,
+        createdAt: true,
+        providerCallId: true,
+        recordingUrl: true,
+      },
     }),
   ]);
+
+  // IMPORTANT: dynamic import so server-only code never enters client build
+  const {
+    buildCartPreview,
+    fetchSupabaseSummaries,
+    pickLatestJobByCheckout,
+    pickRecordingUrl,
+  } = await import("../lib/callInsights.server");
 
   const latestJobMap = pickLatestJobByCheckout(jobs);
 
   const checkoutIds = checkouts.map((c) => String(c.checkoutId)).filter(Boolean);
+
   const callIds = checkouts
     .map((c) => {
       const j = latestJobMap.get(String(c.checkoutId)) ?? null;
       return j?.providerCallId ? String(j.providerCallId) : "";
     })
     .filter(Boolean);
+
   const jobIds = checkouts
     .map((c) => {
       const j = latestJobMap.get(String(c.checkoutId)) ?? null;
@@ -323,9 +346,7 @@ export default function Checkouts() {
                       {c.callOutcome ? c.callOutcome.toUpperCase() : "—"}
                     </Pill>
                   </td>
-                  <td style={cell}>
-                    {c.buyProbabilityPct == null ? <Pill>—</Pill> : <Pill>{c.buyProbabilityPct}%</Pill>}
-                  </td>
+                  <td style={cell}>{c.buyProbabilityPct == null ? <Pill>—</Pill> : <Pill>{c.buyProbabilityPct}%</Pill>}</td>
                   <td style={cell}>
                     {c.recordingUrl ? (
                       <a href={c.recordingUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
