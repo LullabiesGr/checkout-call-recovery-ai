@@ -71,9 +71,7 @@ function StatCard(props: { label: string; value: any; sub: string; icon?: string
           {props.icon ?? "•"}
         </div>
       </div>
-      <div style={{ marginTop: 8, fontWeight: 1000, fontSize: 22, color: "rgba(17,24,39,0.92)" }}>
-        {props.value}
-      </div>
+      <div style={{ marginTop: 8, fontWeight: 1000, fontSize: 22, color: "rgba(17,24,39,0.92)" }}>{props.value}</div>
       <div style={{ marginTop: 4, fontWeight: 850, fontSize: 12, color: "rgba(17,24,39,0.45)" }}>{props.sub}</div>
     </div>
   );
@@ -203,14 +201,7 @@ export default function DashboardIndex() {
         </div>
       </div>
 
-      <div
-        style={{
-          marginTop: 12,
-          display: "grid",
-          gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
-          gap: 12,
-        }}
-      >
+      <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 12 }}>
         <StatCard label="Open" value={stats.openCount7d} sub="Created in last 7 days" icon="◻" />
         <StatCard label="Abandoned" value={stats.abandonedCount7d} sub="Abandoned in last 7 days" icon="🛒" />
         <StatCard label="Recovered" value={stats.convertedCount7d} sub="Converted in last 7 days" icon="✓" />

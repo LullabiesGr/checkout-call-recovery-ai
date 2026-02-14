@@ -7,15 +7,38 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { ensureSettings } from "../callRecovery.server";
 
-function safeStr(v: any) {
-  return v == null ? "" : String(v);
-}
+import {
+  buildCartPreview,
+  fetchSupabaseSummaries,
+  formatWhen,
+  pickLatestJobByCheckout,
+  pickRecordingUrl,
+  safeStr,
+} from "../lib/callInsights.server";
 
-function formatWhen(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString();
-}
+type Row = {
+  checkoutId: string;
+  status: string;
+  updatedAt: string;
+  abandonedAt: string | null;
+  customerName: string | null;
+  phone: string | null;
+  email: string | null;
+  value: number;
+  currency: string;
+  cartPreview: string | null;
+
+  callStatus: string | null;
+  callOutcome: string | null;
+  aiStatus: string | null;
+  buyProbabilityPct: number | null;
+  recordingUrl: string | null;
+};
+
+type LoaderData = {
+  shop: string;
+  rows: Row[];
+};
 
 function Pill(props: { children: any; tone?: "neutral" | "green" | "blue" | "amber" | "red"; title?: string }) {
   const tone = props.tone ?? "neutral";
@@ -56,30 +79,6 @@ function CheckoutStatusPill({ status }: { status: string }) {
   const tone = s === "CONVERTED" ? "green" : s === "ABANDONED" ? "red" : s === "OPEN" ? "amber" : "neutral";
   return <Pill tone={tone as any}>{s}</Pill>;
 }
-
-type Row = {
-  checkoutId: string;
-  status: string;
-  updatedAt: string;
-  abandonedAt: string | null;
-  customerName: string | null;
-  phone: string | null;
-  email: string | null;
-  value: number;
-  currency: string;
-  cartPreview: string | null;
-
-  callStatus: string | null;
-  callOutcome: string | null;
-  aiStatus: string | null;
-  buyProbabilityPct: number | null;
-  recordingUrl: string | null;
-};
-
-type LoaderData = {
-  shop: string;
-  rows: Row[];
-};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -122,14 +121,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
     }),
   ]);
-
-  // IMPORTANT: dynamic import so server-only code never enters client build
-  const {
-    buildCartPreview,
-    fetchSupabaseSummaries,
-    pickLatestJobByCheckout,
-    pickRecordingUrl,
-  } = await import("../lib/callInsights.server");
 
   const latestJobMap = pickLatestJobByCheckout(jobs);
 

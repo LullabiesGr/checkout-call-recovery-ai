@@ -69,13 +69,14 @@ export type SupabaseCallSummary = {
   structured_outputs?: any;
 };
 
-function uniq(values: string[]) {
-  const s = new Set(values.map((x) => x.trim()).filter(Boolean));
-  return Array.from(s);
+export function safeStr(v: any) {
+  return v == null ? "" : String(v);
 }
 
-function cleanIdList(values: string[]) {
-  return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
+export function formatWhen(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString();
 }
 
 export function buildCartPreview(itemsJson?: string | null): string | null {
@@ -96,6 +97,24 @@ export function buildCartPreview(itemsJson?: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+// ✅ REQUIRED EXPORT (fixes your Render error)
+export function isVapiConfiguredFromEnv() {
+  const assistantId = process.env.VAPI_ASSISTANT_ID?.trim();
+  const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID?.trim();
+  const apiKey = process.env.VAPI_API_KEY?.trim();
+  const serverUrl = process.env.VAPI_SERVER_URL?.trim();
+  return Boolean(apiKey) && Boolean(assistantId) && Boolean(phoneNumberId) && Boolean(serverUrl);
+}
+
+function uniq(values: string[]) {
+  const s = new Set(values.map((x) => x.trim()).filter(Boolean));
+  return Array.from(s);
+}
+
+function cleanIdList(values: string[]) {
+  return uniq(values).map((x) => x.replace(/[,"'()]/g, ""));
 }
 
 export function pickLatestJobByCheckout(jobs: Array<any>) {
@@ -215,16 +234,16 @@ export async function fetchSupabaseSummaries(opts: {
     if (!r.ok) {
       const body = await r.text().catch(() => "");
       console.error("[SB] fetch failed", r.status, r.statusText, body.slice(0, 800));
-      return [];
+      return null as any;
     }
-    const data = (await r.json()) as any;
-    return Array.isArray(data) ? (data as SupabaseCallSummary[]) : [];
+    const data = (await r.json()) as SupabaseCallSummary[];
+    return Array.isArray(data) ? data : [];
   }
 
   let data = await doFetch(withShopParams);
-  if (data.length === 0) data = await doFetch(params);
+  if (data && data.length === 0) data = await doFetch(params);
 
-  for (const row of data) {
+  for (const row of data || []) {
     if (!row) continue;
     if (row.call_id) out.set(`call:${String(row.call_id)}`, row);
     if (row.call_job_id) out.set(`job:${String(row.call_job_id)}`, row);
